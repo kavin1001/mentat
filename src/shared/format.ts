@@ -124,3 +124,17 @@ export function markdownToHtml(md: string): string {
   if (inList) html.push('</ul>')
   return `<html><body>${html.join('\n')}</body></html>`
 }
+
+/**
+ * One Google Doc per meeting: the notes (enhanced if there are any), then a page break, then the full
+ * transcript. Google Docs turns the CSS page break into a real page break when it imports the HTML.
+ */
+export function meetingToDocHtml(m: Meeting): string {
+  const body = (html: string) => html.replace(/^<html><body>/, '').replace(/<\/body><\/html>$/, '')
+  const parts = [body(markdownToHtml(meetingToMarkdown(m)))]
+  if (m.transcript.length) {
+    const transcript = transcriptToText(m.transcript, m.speakerNames).split('\n').join('\n\n')
+    parts.push('<p style="page-break-before: always; break-before: page"></p>', body(markdownToHtml(`## Transcript\n\n${transcript}`)))
+  }
+  return `<html><body>${parts.join('\n')}</body></html>`
+}

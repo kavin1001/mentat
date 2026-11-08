@@ -8,7 +8,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, safeStorage, shell } from 'electron'
 import type { Attendee, CalendarEvent, GoogleStatus, Meeting, Settings } from '../shared/types'
-import { markdownToHtml, meetingToMarkdown, transcriptToText } from '../shared/format'
+import { meetingToDocHtml } from '../shared/format'
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
@@ -464,17 +464,15 @@ async function upsertDoc(settings: Settings, name: string, html: string, parent:
   })
 }
 
-/** Push a meeting's notes and full transcript to Drive as Google Docs, inside Mentat/<folderPath>. */
+/** Push a meeting's notes and full transcript to Drive as one Google Doc, inside <root>/<folderPath>. */
 export async function syncMeetingToDrive(settings: Settings, m: Meeting, folderPath = m.drive?.folderPath ?? []): Promise<NonNullable<Meeting['drive']>> {
   const parent = await ensureFolderPath(settings, folderPath)
   const date = new Date(m.startedAt ?? m.createdAt).toISOString().slice(0, 10)
-  const notes = await upsertDoc(settings, `${date} ${m.title}`, markdownToHtml(meetingToMarkdown(m)), parent, m.drive?.docId)
-  let transcriptDocId = m.drive?.transcriptDocId
-  if (m.transcript.length) {
-    const tHtml = markdownToHtml(`# ${m.title} (transcript)\n\n${transcriptToText(m.transcript, m.speakerNames).split('\n').join('\n\n')}`)
-    transcriptDocId = (await upsertDoc(settings, `${date} ${m.title} (transcript)`, tHtml, parent, transcriptDocId)).id
-  }
-  return { docId: notes.id, transcriptDocId, webViewLink: notes.webViewLink, syncedAt: new Date().toISOString(), shared: m.drive?.shared, folderPath }
+  // Notes and transcript live in one Doc, separated by a page break.
+  const doc = await upsertDoc(settings, `${date} ${m.title}`, meetingToDocHtml(m), parent, m.drive?.docId)
+  // Older versions kept the transcript in a second Doc: retire it now that it's part of the main one.
+  if (m.drive?.transcriptDocId) await trashDriveFiles(settings, [m.drive.transcriptDocId]).catch(() => undefined)
+  return { docId: doc.id, transcriptDocId: undefined, webViewLink: doc.webViewLink, syncedAt: new Date().toISOString(), shared: m.drive?.shared, folderPath }
 }
 
 /** Share the notes doc: anyone with the link can view, and optionally email attendees. */
