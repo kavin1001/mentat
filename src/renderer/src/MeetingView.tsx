@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Folder, Meeting, Speaker, Template } from '../../shared/types'
-import { fmtTime, transcriptTurns } from '../../shared/format'
+import { fmtTime, transcriptToText, transcriptTurns } from '../../shared/format'
 import { api } from './api'
 import { wsApi, type WorkspacesStatus } from './wsApi'
 import { startCapture, type CaptureHandle } from './audio'
@@ -30,6 +30,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
   const [speaking, setSpeaking] = useState<Record<Speaker, boolean>>({ me: false, them: false })
   const [partial, setPartial] = useState<Record<Speaker, string>>({ me: '', them: '' })
   const [renaming, setRenaming] = useState<{ index: number; value: string } | null>(null)
+  const [copied, setCopied] = useState(false)
   const [modelStatus, setModelStatus] = useState<string | null>(null)
   const [enhancing, setEnhancing] = useState(false)
   const [menu, setMenu] = useState(false)
@@ -422,9 +423,29 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
         <aside className="side-panel">
           <div className="side-head">
             <strong>{panel === 'transcript' ? 'Transcript' : 'Ask about this meeting'}</strong>
-            <button className="btn ghost" onClick={() => setPanel(null)}>
-              ✕
-            </button>
+            <div className="side-actions">
+              {panel === 'transcript' && (
+                <button
+                  className="btn ghost"
+                  title="Copy the whole transcript with speaker names"
+                  disabled={!turns.length}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(transcriptToText(m.transcript, m.speakerNames))
+                      setCopied(true)
+                      setTimeout(() => setCopied(false), 1500)
+                    } catch (e) {
+                      onError(`Couldn't copy the transcript: ${(e as Error).message}`)
+                    }
+                  }}
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+              )}
+              <button className="btn ghost" onClick={() => setPanel(null)}>
+                ✕
+              </button>
+            </div>
           </div>
           {panel === 'transcript' ? (
             <div className="transcript">
