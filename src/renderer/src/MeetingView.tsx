@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Folder, Meeting, Speaker, Template } from '../../shared/types'
 import { fmtTime, transcriptTurns } from '../../shared/format'
 import { api } from './api'
+import { wsApi, type WorkspacesStatus } from './wsApi'
 import { startCapture, type CaptureHandle } from './audio'
 import { ChatPanel } from './ChatPanel'
 import { beginTranscription, endTranscription, ensureModel, onTranscriber } from './transcriber'
@@ -29,6 +30,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
   const [enhancing, setEnhancing] = useState(false)
   const [menu, setMenu] = useState(false)
   const [email, setEmail] = useState<string | null>(null)
+  const [ws, setWs] = useState<WorkspacesStatus['workspaces']>([])
   const capture = useRef<CaptureHandle | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
@@ -41,6 +43,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
       setTemplates(ts)
       const s = await api.settings.get()
       setTemplateId(meeting?.enhanced?.templateId ?? s.defaultTemplateId)
+      wsApi.status().then((w) => setWs(w.workspaces.filter((x) => x.role !== 'viewer' && !x.pending))).catch(() => undefined)
       const status = await api.recording.status()
       if (status?.meetingId === id) setRecording(true)
       else if (autoRecord) void start()
@@ -162,6 +165,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
                 </option>
               ))}
             </select>
+            {(m.workspaceIds?.length ?? 0) > 0 && <span className="pill">Shared</span>}
             {m.drive && (
               <a className="pill link" href={m.drive.webViewLink} target="_blank" rel="noreferrer" title="Open in Google Drive">
                 Drive{m.drive.folderPath?.length ? `: ${m.drive.folderPath.join(' / ')}` : ''} ↗
@@ -190,6 +194,26 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
                     Share link (Google Doc)
                   </button>
                   <button onClick={() => act(async () => setEmail(await api.ai.followUp(id)))}>Draft follow-up email</button>
+                  {ws.length > 0 && <hr />}
+                  {ws.map((w) => {
+                    const viaFolder = m.folderIds.some((f) => folders.find((x) => x.id === f)?.workspaceIds?.includes(w.id))
+                    const direct = !!m.workspaceIds?.includes(w.id)
+                    if (viaFolder && !direct) return <button key={w.id} disabled>Shared in {w.name} (through its folder)</button>
+                    return (
+                      <button
+                        key={w.id}
+                        onClick={() =>
+                          act(async () => {
+                            await wsApi.shareMeeting(w.id, id, !direct)
+                            setM(await api.meetings.get(id))
+                            onError(direct ? `Stopped sharing in ${w.name}.` : `Shared with everyone in ${w.name}, including the transcript.`)
+                          })
+                        }
+                      >
+                        {direct ? `Stop sharing in ${w.name}` : `Share to ${w.name} (notes + transcript)`}
+                      </button>
+                    )
+                  })}
                   <hr />
                   <button onClick={() => act(() => api.exportMeeting(id, 'md'))}>Export notes + transcript (.md)</button>
                   <button onClick={() => act(() => api.exportMeeting(id, 'txt'))}>Export transcript (.txt)</button>

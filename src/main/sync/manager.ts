@@ -25,6 +25,8 @@ import type { Store } from '../../shared/store'
 import { LocalIndex } from './local-index'
 import { DEFAULT_LOCAL_PORT, LocalSyncServer, newPairing, pairingPayload, type PairedDevice } from './local-server'
 import { DesktopCloudAdapter } from './cloud-adapter'
+import { WorkspaceService, type WorkspacesStatus } from './workspaces'
+import { listLocalWorkspaces, workspaceStore } from '../../shared/workspaces'
 
 interface StoredSync {
   local: { enabled: boolean; port: number; devices: (Omit<PairedDevice, 'secret'> & { secret: string })[] }
@@ -49,11 +51,13 @@ export class SyncManager {
   private timer: NodeJS.Timeout | null = null
   private localError?: string
   private cloudState: { lastSyncAt?: string; lastError?: string; syncing: boolean; lastStats?: SyncStats } = { syncing: false }
+  readonly workspaces: WorkspaceService
 
   constructor(
-    store: Store,
-    private notify: { dataChanged: () => void; statusChanged: (s: SyncStatus) => void }
+    private store: Store,
+    private notify: { dataChanged: () => void; statusChanged: (s: SyncStatus) => void; workspacesChanged?: (s: WorkspacesStatus) => void }
   ) {
+    this.workspaces = new WorkspaceService(store, () => this.cloud)
     this.index = new LocalIndex(store)
     this.index.scan()
     this.adapter = new DesktopCloudAdapter(this.index)
@@ -207,7 +211,9 @@ export class SyncManager {
     if (this.cloud) await signOut(this.cloud)
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    this.workspaces.clearLocal()
     this.setCloud(null)
+    this.notifyWorkspaces()
     return this.status()
   }
 
@@ -239,7 +245,29 @@ export class SyncManager {
     }
     if (this.adapter.appliedRemote !== before) this.notify.dataChanged()
     this.notify.statusChanged(this.status())
+    void this.syncWorkspaces()
     return this.status()
+  }
+
+  // ---------- shared workspaces ----------
+  private notifyWorkspaces() {
+    this.notify.workspacesChanged?.(this.workspaces.status())
+  }
+
+  /** Runs a workspace action (or a plain sync) and tells the UI about new shared meetings. */
+  private async wsRun<T>(fn: () => Promise<T> | T): Promise<T> {
+    const before = this.workspaces.receivedChanges
+    try {
+      return await fn()
+    } finally {
+      if (this.workspaces.receivedChanges !== before) this.notify.dataChanged()
+      this.notifyWorkspaces()
+    }
+  }
+
+  syncWorkspaces() {
+    if (!this.cloud) return Promise.resolve(this.workspaces.status())
+    return this.wsRun(() => this.workspaces.sync())
   }
 
   /** Call after the app itself saves something, so changes reach the cloud quickly. */
@@ -258,5 +286,24 @@ export class SyncManager {
     h('sync:cloud:signOut', () => this.signOutCloud())
     h('sync:cloud:delete', () => this.deleteCloudProfile())
     h('sync:now', () => this.syncCloud())
+
+    const w = this.workspaces
+    h('ws:status', () => w.status())
+    h('ws:sync', () => this.syncWorkspaces())
+    h('ws:create', (_e, name: string) => this.wsRun(() => w.create(name)))
+    h('ws:detail', (_e, id: string) => w.detail(id))
+    h('ws:invite', (_e, id: string, role: 'editor' | 'viewer', days?: number) => w.invite(id, role, days))
+    h('ws:revokeInvite', (_e, id: string, inviteId: string) => w.revokeInvite(id, inviteId))
+    h('ws:join', (_e, code: string) => this.wsRun(() => w.join(code)))
+    h('ws:setRole', (_e, id: string, username: string, role: 'editor' | 'viewer') => this.wsRun(() => w.setRole(id, username, role)))
+    h('ws:removeMember', (_e, id: string, username: string) => this.wsRun(() => w.removeMember(id, username)))
+    h('ws:leave', (_e, id: string) => this.wsRun(() => w.leave(id)))
+    h('ws:delete', (_e, id: string) => this.wsRun(() => w.remove(id)))
+    h('ws:shareFolder', (_e, id: string, folderId: string, shared: boolean) => this.wsRun(() => w.shareFolder(id, folderId, shared)))
+    h('ws:shareMeeting', (_e, id: string, meetingId: string, shared: boolean) => this.wsRun(() => w.shareMeeting(id, meetingId, shared)))
+    // Read side: meetings others shared, from the local cache.
+    h('ws:local', () => listLocalWorkspaces(this.store.dataDir))
+    h('ws:meetings', (_e, id: string, query?: string) => workspaceStore(this.store.dataDir, id).listMeetings({ query }))
+    h('ws:meeting', (_e, id: string, meetingId: string) => workspaceStore(this.store.dataDir, id).getMeeting(meetingId))
   }
 }

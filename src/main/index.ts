@@ -260,7 +260,11 @@ app.whenReady().then(() => {
   registerIpc()
 
   // Optional sync (phone on this network and/or cloud profile). Off by default.
-  sync = new SyncManager(store, { dataChanged: () => send('sync:dataChanged'), statusChanged: (s) => send('sync:status', s) })
+  sync = new SyncManager(store, {
+    dataChanged: () => send('sync:dataChanged'),
+    statusChanged: (s) => send('sync:status', s),
+    workspacesChanged: (s) => send('ws:status', s)
+  })
   sync.registerIpc(ipcMain)
   void sync.start()
 

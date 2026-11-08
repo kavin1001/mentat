@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { CalendarEvent, Folder, MeetingSummary } from '../../shared/types'
+import type { CalendarEvent, Folder, LocalWorkspace, MeetingSummary } from '../../shared/types'
 import { api } from './api'
 import { syncApi } from './syncApi'
+import { wsApi } from './wsApi'
 import { MeetingView } from './MeetingView'
+import { SharedMeetingView } from './SharedMeetingView'
 import { ChatPanel } from './ChatPanel'
 import { SettingsView } from './SettingsView'
 import { TemplatesView } from './TemplatesView'
 import { Markdown } from './Markdown'
 
-type View = { kind: 'meeting'; id: string; autoRecord?: boolean } | { kind: 'home' } | { kind: 'chat' } | { kind: 'settings' } | { kind: 'templates' }
+type View =
+  | { kind: 'meeting'; id: string; autoRecord?: boolean }
+  | { kind: 'shared'; workspaceId: string; id: string }
+  | { kind: 'home' } | { kind: 'chat' } | { kind: 'settings' } | { kind: 'templates' }
 
 function dayLabel(iso: string): string {
   const d = new Date(iso)
@@ -28,6 +33,9 @@ export function App() {
   const [folders, setFolders] = useState<Folder[]>([])
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [folderId, setFolderId] = useState<string | undefined>()
+  // Set when browsing a shared workspace instead of your own notes.
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>()
+  const [workspaces, setWorkspaces] = useState<LocalWorkspace[]>([])
   const [query, setQuery] = useState('')
   const [toast, setToast] = useState<string | null>(null)
   const [brief, setBrief] = useState<{ ev: CalendarEvent; text: string | null } | null>(null)
@@ -35,9 +43,13 @@ export function App() {
   const [newFolder, setNewFolder] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    setMeetings(await api.meetings.list({ folderId, query: query || undefined }))
+    const ws = await wsApi.local()
+    setWorkspaces(ws)
+    const browsing = workspaceId && ws.some((w) => w.id === workspaceId) ? workspaceId : undefined
+    if (workspaceId && !browsing) setWorkspaceId(undefined)
+    setMeetings(browsing ? await wsApi.meetings(browsing, query || undefined) : await api.meetings.list({ folderId, query: query || undefined }))
     setFolders(await api.folders.list())
-  }, [folderId, query])
+  }, [folderId, workspaceId, query])
 
   useEffect(() => {
     void refresh()
@@ -48,6 +60,7 @@ export function App() {
     const offs = [
       api.events.onCalendar(setEvents),
       syncApi.onDataChanged(() => void refresh()),
+      wsApi.onStatus(() => void refresh()),
       api.events.onError((m) => setToast(m)),
       api.events.onOpenMeeting((id, opts) => {
         setView({ kind: 'meeting', id, autoRecord: opts.autoRecord })
@@ -64,6 +77,7 @@ export function App() {
   }, [toast])
 
   const newMeeting = async () => {
+    setWorkspaceId(undefined)
     const m = await api.meetings.create(folderId ? { folderIds: [folderId] } : undefined)
     await refresh()
     setView({ kind: 'meeting', id: m.id })
@@ -148,25 +162,42 @@ export function App() {
               onBlur={() => setNewFolder(null)}
             />
           )}
-          <button className={`nav ${!folderId ? 'active' : ''}`} onClick={() => setFolderId(undefined)}>
+          <button className={`nav ${!folderId && !workspaceId ? 'active' : ''}`} onClick={() => { setFolderId(undefined); setWorkspaceId(undefined) }}>
             All notes
           </button>
           {folders.map((f) => (
-            <button key={f.id} className={`nav ${folderId === f.id ? 'active' : ''}`} onClick={() => setFolderId(f.id)}>
+            <button key={f.id} className={`nav ${folderId === f.id && !workspaceId ? 'active' : ''}`} onClick={() => { setFolderId(f.id); setWorkspaceId(undefined) }}>
               ▸ {f.name}
+              {f.workspaceIds?.length ? <span className="muted small"> · shared</span> : null}
             </button>
           ))}
         </section>
+
+        {workspaces.length > 0 && (
+          <section>
+            <h4>Workspaces</h4>
+            {workspaces.map((w) => (
+              <button key={w.id} className={`nav ${workspaceId === w.id ? 'active' : ''}`} onClick={() => setWorkspaceId(w.id)} title={`Owner: ${w.owner} · you are ${w.role === 'owner' ? 'the owner' : `a ${w.role}`}`}>
+                ◇ {w.name}
+              </button>
+            ))}
+          </section>
+        )}
 
         <section className="meeting-list">
           {groups.map(([label, ms]) => (
             <div key={label}>
               <h4>{label}</h4>
               {ms.map((m) => (
-                <button key={m.id} className={`meeting-item ${view.kind === 'meeting' && view.id === m.id ? 'active' : ''}`} onClick={() => setView({ kind: 'meeting', id: m.id })}>
+                <button
+                  key={m.id}
+                  className={`meeting-item ${(view.kind === 'meeting' || view.kind === 'shared') && view.id === m.id ? 'active' : ''}`}
+                  onClick={() => setView(workspaceId ? { kind: 'shared', workspaceId, id: m.id } : { kind: 'meeting', id: m.id })}
+                >
                   <span className="mi-title">{m.title}</span>
                   <span className="mi-meta">
                     {timeOf(m.startedAt ?? m.createdAt)}
+                    {m.sharedBy ? ` · ${m.sharedBy}` : ''}
                     {m.hasTranscript ? ' · transcript' : ''}
                     {m.hasEnhanced ? ' · notes' : ''}
                   </span>
@@ -174,7 +205,9 @@ export function App() {
               ))}
             </div>
           ))}
-          {!meetings.length && <p className="muted small">No notes yet. Start one, or open a meeting from your calendar.</p>}
+          {!meetings.length && (
+            <p className="muted small">{workspaceId ? 'Nothing has been shared in this workspace yet.' : 'No notes yet. Start one, or open a meeting from your calendar.'}</p>
+          )}
         </section>
 
         <footer className="sidebar-footer">
@@ -203,6 +236,14 @@ export function App() {
               void refresh()
             }}
             onError={setToast}
+          />
+        )}
+        {view.kind === 'shared' && (
+          <SharedMeetingView
+            key={`${view.workspaceId}:${view.id}`}
+            workspaceId={view.workspaceId}
+            workspaceName={workspaces.find((w) => w.id === view.workspaceId)?.name ?? 'a shared workspace'}
+            id={view.id}
           />
         )}
         {view.kind === 'home' && (

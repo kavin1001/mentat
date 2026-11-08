@@ -26,6 +26,7 @@
   "devDependencies": {
     "@mentat/sync-core": "file:packages/sync-core",
     "@noble/ciphers": "^2.0.0",
+    "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.0.0",
     "@types/node": "^22.0.0",
     "@types/qrcode": "^1.5.5",

@@ -19,7 +19,7 @@ export interface LocalAdapter {
    * Apply a record from the server at `seq`. The adapter decides last-writer-wins (see incomingWins):
    * if the local copy is newer it keeps it, stays pending, and records `seq` as its new base.
    */
-  applyRemote(record: SyncRecord, seq: number): Promise<void>
+  applyRemote(record: SyncRecord, seq: number, info?: { author?: string }): Promise<void>
   /** The server accepted `record` at `seq`. Clear pending unless the record changed again meanwhile. */
   markPushed(record: SyncRecord, seq: number): Promise<void>
 }
@@ -47,14 +47,31 @@ export type FetchLike = (url: string, init?: { method?: string; headers?: Record
   text(): Promise<string>
 }>
 
+/** How records turn into (opaque key, ciphertext) pairs. A profile uses its SyncKeys; a shared workspace its keyring. */
+export interface RecordCodec {
+  seal(record: SyncRecord): { key: string; blob: string }
+  open(key: string, blob: string): SyncRecord
+}
+
+export function keysCodec(keys: SyncKeys): RecordCodec {
+  return { seal: (r) => sealRecord(keys, r), open: (k, b) => openRecord(keys, k, b) }
+}
+
 export class SyncTransport {
   constructor(
     readonly baseUrl: string,
     private token: () => string | undefined,
     // Wrapped so fetch is never called with the transport as `this` (browsers throw "Illegal invocation").
     private fetchImpl: FetchLike = (url, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(url, init),
-    private timeoutMs = 20000
+    private timeoutMs = 20000,
+    /** Where the change feed lives: '/v1/changes' for a profile, '/v1/workspaces/<id>/changes' for a workspace. */
+    readonly changesPath = '/v1/changes'
   ) {}
+
+  /** The same server and credentials, pointed at a different change feed. */
+  withChangesPath(path: string): SyncTransport {
+    return new SyncTransport(this.baseUrl, this.token, this.fetchImpl, this.timeoutMs, path)
+  }
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { accept: 'application/json' }
@@ -90,10 +107,10 @@ export class SyncTransport {
     return this.request<ServerInfo>('GET', '/v1/info')
   }
   pull(since: number, limit = 200) {
-    return this.request<PullResponse>('GET', `/v1/changes?since=${since}&limit=${limit}`)
+    return this.request<PullResponse>('GET', `${this.changesPath}?since=${since}&limit=${limit}`)
   }
   push(changes: PushItem[]) {
-    return this.request<PushResponse>('POST', '/v1/changes', { changes })
+    return this.request<PushResponse>('POST', this.changesPath, { changes })
   }
 }
 
@@ -101,12 +118,15 @@ const PUSH_BATCH = 50
 
 export class SyncClient {
   private running: Promise<SyncStats> | null = null
+  private codec: RecordCodec
 
   constructor(
     private transport: SyncTransport,
-    private keys: SyncKeys,
+    keys: SyncKeys | RecordCodec,
     private local: LocalAdapter
-  ) {}
+  ) {
+    this.codec = 'seal' in keys ? keys : keysCodec(keys)
+  }
 
   /** Runs one full sync. Concurrent calls share the run in progress. */
   sync(): Promise<SyncStats> {
@@ -117,12 +137,12 @@ export class SyncClient {
   private async applyWire(c: WireChange, stats: SyncStats): Promise<void> {
     let rec: SyncRecord
     try {
-      rec = openRecord(this.keys, c.key, c.blob)
+      rec = this.codec.open(c.key, c.blob)
     } catch (e) {
       stats.errors.push(`could not decrypt a change (seq ${c.seq}): ${(e as Error).message}`)
       return
     }
-    await this.local.applyRemote(rec, c.seq)
+    await this.local.applyRemote(rec, c.seq, { author: c.author })
     stats.pulled++
   }
 
@@ -149,7 +169,7 @@ export class SyncClient {
       let conflicted = false
       for (let i = 0; i < pending.length; i += PUSH_BATCH) {
         const batch = pending.slice(i, i + PUSH_BATCH)
-        const sealed = batch.map((p) => ({ p, s: sealRecord(this.keys, p.record) }))
+        const sealed = batch.map((p) => ({ p, s: this.codec.seal(p.record) }))
         const res = await this.transport.push(sealed.map(({ p, s }) => ({ key: s.key, baseSeq: p.baseSeq, blob: s.blob })))
         const byKey = new Map(sealed.map(({ p, s }) => [s.key, p]))
         for (const r of res.results) {

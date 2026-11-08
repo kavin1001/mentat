@@ -139,6 +139,9 @@ export class Store {
     writeAtomic(this.foldersPath, JSON.stringify([...this.listFolders(), f], null, 2))
     return f
   }
+  updateFolder(id: string, patch: Partial<Omit<Folder, 'id'>>): void {
+    writeAtomic(this.foldersPath, JSON.stringify(this.listFolders().map((f) => (f.id === id ? { ...f, ...patch, id } : f)), null, 2))
+  }
   renameFolder(id: string, name: string): void {
     writeAtomic(this.foldersPath, JSON.stringify(this.listFolders().map((f) => (f.id === id ? { ...f, name } : f)), null, 2))
   }
@@ -183,6 +186,8 @@ export function summarize(m: Meeting): MeetingSummary {
     startedAt: m.startedAt,
     attendees: m.attendees,
     folderIds: m.folderIds,
+    sharedBy: m.sharedBy,
+    workspaceIds: m.workspaceIds,
     hasTranscript: m.transcript.length > 0,
     hasEnhanced: !!m.enhanced,
     preview

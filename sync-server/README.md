@@ -52,6 +52,11 @@ See `packages/sync-core/src/protocol.ts`. The desktop app's local-network server
 note, except that the transcript always comes from the computer (it appends while recording and removes
 echo), so a phone editing notes during a recording never drops or brings back transcript lines.
 
+Shared workspaces add the routes in `packages/sync-core/src/workspace-protocol.ts`. The relay stores the
+workspace name, every member's key bundle and every record as ciphertext, and enforces membership, roles
+(owner, editor, viewer), single-use expiring invites (only a hash of the redeem token is stored), record
+authorship and the current key epoch.
+
 ## Tests
 
 ```bash

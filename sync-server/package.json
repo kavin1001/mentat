@@ -14,10 +14,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "NODE_OPTIONS=--preserve-symlinks tsx --test test/*.test.ts"
   },
-  "dependencies": {},
   "devDependencies": {
     "@mentat/sync-core": "file:../packages/sync-core",
     "@noble/ciphers": "^2.0.0",
+    "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.0.0",
     "@types/node": "^22.0.0",
     "esbuild": "^0.27.0",
