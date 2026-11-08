@@ -65,6 +65,8 @@ export const api = {
     events: () => inv<CalendarEvent[]>('calendar:events')
   },
   drive: {
+    folders: (parent?: string) => inv<{ id: string; name: string }[]>('drive:folders', parent),
+    createFolder: (name: string, parent?: string) => inv<string>('drive:createFolder', name, parent),
     sync: (meetingId: string, reclassify = false) => inv<Meeting>('drive:sync', meetingId, reclassify),
     share: (meetingId: string, emails: string[]) => inv<Meeting>('drive:share', meetingId, emails)
   },
@@ -75,6 +77,7 @@ export const api = {
     onError: (cb: (msg: string) => void) => window.mentat.on('app:error', cb),
     onOpenMeeting: (cb: (id: string, opts: { autoRecord?: boolean }) => void) => window.mentat.on('meeting:open', cb),
     onCalendar: (cb: (events: CalendarEvent[]) => void) => window.mentat.on('calendar:events', cb),
+    onMeetingChanged: (cb: (meetingId: string) => void) => window.mentat.on('meeting:changed', cb),
     onAutoStop: (cb: (meetingId: string) => void) => window.mentat.on('recording:autoStop', cb)
   }
 }

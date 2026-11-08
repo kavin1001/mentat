@@ -63,3 +63,15 @@ Anyone building Mentat without the built-in client can paste their own Desktop-a
 
 People who connected before this change gave Mentat only `drive.file` access. Settings shows a
 **Reconnect** link that asks Google again with full Drive access.
+
+## Where notes go, and when
+
+- **Folder:** Settings → Google Drive and Calendar → **Choose folder…** picks any folder in your Drive (or makes a
+  new one). Without a choice, Mentat creates `Mentat` at the top of My Drive.
+- **Filing:** with "Let Claude file each note" on, Claude reads the folders already inside that folder and puts
+  each note in the best fit, e.g. `Customers / Acme Corp`, creating a sub-folder only when nothing fits.
+  Your filing rules take priority. This needs an Anthropic API key; without one, notes go in the top folder.
+- **When:** each note uploads as soon as its recording stops (notes Doc plus a full transcript Doc). Enhance
+  notes later updates the same Docs instead of making new ones.
+- **Delete:** deleting a note in Mentat moves its two Docs to the Drive trash, where they can be restored for
+  30 days. Turn this off in Settings to keep Drive copies.

@@ -262,21 +262,28 @@ export async function upcomingEvents(settings: Settings, days = 7): Promise<Cale
 }
 
 // ---------- Drive ----------
-// Mentat files every note under one root folder ("Mentat" by default, at the top of My Drive) and, when
-// auto-classify is on, into a sub-folder Claude picks, e.g. Mentat/Customers/Acme. Folders you make there
-// yourself in Drive count too.
+// Mentat files every note under one root folder (the one picked in Settings, or "Mentat" at the top of My
+// Drive) and, when auto-classify is on, into a sub-folder Claude picks from the folders already there,
+// e.g. <root>/Customers/Acme. Folders you make there yourself in Drive count too.
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
 const folderCache = new Map<string, string>() // "root/a/b" -> folder id
 
 const q = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 
+const ALL_DRIVES = 'supportsAllDrives=true&includeItemsFromAllDrives=true'
+
 async function findOrCreateFolder(settings: Settings, name: string, parent?: string): Promise<string> {
   // With full Drive access, look only at the top of My Drive for the root, not every folder with that name.
   const query = `mimeType='${FOLDER_MIME}' and name='${q(name)}' and trashed=false and '${parent ?? 'root'}' in parents`
-  const found = await gfetch<{ files: { id: string }[] }>(settings, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id)`)
+  const found = await gfetch<{ files: { id: string }[] }>(settings, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id)&${ALL_DRIVES}`)
   if (found.files[0]) return found.files[0].id
-  const created = await gfetch<{ id: string }>(settings, 'https://www.googleapis.com/drive/v3/files?fields=id', {
+  return createDriveFolder(settings, name, parent)
+}
+
+/** Create a folder (in My Drive's top level when no parent is given) and return its id. */
+export async function createDriveFolder(settings: Settings, name: string, parent?: string): Promise<string> {
+  const created = await gfetch<{ id: string }>(settings, 'https://www.googleapis.com/drive/v3/files?fields=id&supportsAllDrives=true', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, mimeType: FOLDER_MIME, ...(parent ? { parents: [parent] } : {}) })
@@ -284,12 +291,50 @@ async function findOrCreateFolder(settings: Settings, name: string, parent?: str
   return created.id
 }
 
-/** Ensure Mentat/<path...> exists and return the id of the deepest folder. */
-async function ensureFolderPath(settings: Settings, path: string[] = []): Promise<string> {
-  const root = settings.driveFolderName || 'Mentat'
-  let key = root
-  let id = folderCache.get(key) ?? (await findOrCreateFolder(settings, root))
+/** The folders directly inside a folder ("root" is the top of My Drive), for the folder picker. */
+export async function listDriveFolders(settings: Settings, parent = 'root'): Promise<{ id: string; name: string }[]> {
+  const query = `mimeType='${FOLDER_MIME}' and trashed=false and '${q(parent)}' in parents`
+  const out: { id: string; name: string }[] = []
+  let pageToken = ''
+  do {
+    const page = await gfetch<{ files: { id: string; name: string }[]; nextPageToken?: string }>(
+      settings,
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name)&orderBy=name&pageSize=200&${ALL_DRIVES}${pageToken ? `&pageToken=${pageToken}` : ''}`
+    )
+    out.push(...page.files)
+    pageToken = page.nextPageToken ?? ''
+  } while (pageToken && out.length < 1000)
+  return out
+}
+
+/** Move Drive files to the trash (restorable there for 30 days). Files already gone are ignored. */
+export async function trashDriveFiles(settings: Settings, ids: string[]): Promise<void> {
+  for (const id of ids) {
+    try {
+      await gfetch(settings, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?supportsAllDrives=true&fields=id`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true })
+      })
+    } catch (err) {
+      if (!/Google API 404/.test(String(err))) throw err
+    }
+  }
+}
+
+/** The upload root: the folder picked in Settings, or a "Mentat" folder at the top of My Drive. */
+async function rootFolderId(settings: Settings): Promise<{ key: string; id: string }> {
+  if (settings.driveFolderId) return { key: `id:${settings.driveFolderId}`, id: settings.driveFolderId }
+  const name = settings.driveFolderName || 'Mentat'
+  const key = `name:${name}`
+  const id = folderCache.get(key) ?? (await findOrCreateFolder(settings, name))
   folderCache.set(key, id)
+  return { key, id }
+}
+
+/** Ensure <root>/<path...> exists and return the id of the deepest folder. */
+async function ensureFolderPath(settings: Settings, path: string[] = []): Promise<string> {
+  let { key, id } = await rootFolderId(settings)
   for (const raw of path) {
     const name = raw.trim().slice(0, 100)
     if (!name) continue
@@ -316,7 +361,7 @@ export async function driveFolderTree(settings: Settings): Promise<string[][]> {
       do {
         const page = await gfetch<{ files: { id: string; name: string; parents?: string[] }[]; nextPageToken?: string }>(
           settings,
-          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,parents)&pageSize=1000${pageToken ? `&pageToken=${pageToken}` : ''}`
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,parents)&pageSize=1000&${ALL_DRIVES}${pageToken ? `&pageToken=${pageToken}` : ''}`
         )
         for (const f of page.files) {
           const parent = batch.find((p) => f.parents?.includes(p.id))
@@ -376,15 +421,16 @@ export async function readDriveFile(settings: Settings, id: string, maxChars = 6
 async function upsertDoc(settings: Settings, name: string, html: string, parent: string, existingId?: string): Promise<{ id: string; webViewLink: string }> {
   if (existingId) {
     try {
-      const meta = await gfetch<{ parents?: string[] }>(settings, `https://www.googleapis.com/drive/v3/files/${existingId}?fields=parents`)
+      const meta = await gfetch<{ parents?: string[]; trashed?: boolean }>(settings, `https://www.googleapis.com/drive/v3/files/${existingId}?fields=parents,trashed&supportsAllDrives=true`)
+      if (meta.trashed) throw new Error('in the trash') // someone binned it in Drive: make a fresh one
       const move = meta.parents?.includes(parent) ? '' : `&addParents=${parent}&removeParents=${(meta.parents ?? []).join(',')}`
-      return await gfetch(settings, `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=media&fields=id,webViewLink${move}`, {
+      return await gfetch(settings, `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=media&fields=id,webViewLink&supportsAllDrives=true${move}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'text/html' },
         body: html
       })
     } catch {
-      // The doc was deleted in Drive; fall through and create a new one.
+      // The doc was deleted or trashed in Drive; fall through and create a new one.
     }
   }
   const boundary = `mentat${randomBytes(8).toString('hex')}`
@@ -392,7 +438,7 @@ async function upsertDoc(settings: Settings, name: string, html: string, parent:
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
     JSON.stringify({ name, mimeType: 'application/vnd.google-apps.document', parents: [parent] }) +
     `\r\n--${boundary}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n${html}\r\n--${boundary}--`
-  return gfetch(settings, 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink', {
+  return gfetch(settings, 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink&supportsAllDrives=true', {
     method: 'POST',
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
     body

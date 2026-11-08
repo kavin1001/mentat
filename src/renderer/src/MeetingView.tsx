@@ -6,7 +6,7 @@ import { wsApi, type WorkspacesStatus } from './wsApi'
 import { startCapture, type CaptureHandle } from './audio'
 import { ChatPanel } from './ChatPanel'
 import { NoteEditor } from './NoteEditor'
-import { confirmDialog } from './Dialogs'
+import { confirmDeleteNote, confirmDialog } from './Dialogs'
 import { beginTranscription, endTranscription, ensureModel, onTranscriber } from './transcriber'
 
 interface Props {
@@ -57,6 +57,11 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
         if (mid !== id) return
         setM((prev) => (prev ? { ...prev, transcript: [...prev.transcript, seg].sort((a, b) => a.start - b.start) } : prev))
         setPartial((p) => ({ ...p, [seg.speaker]: '' }))
+      }),
+      // Uploaded to Drive in the background (e.g. right after recording): show the Drive link and folder.
+      api.events.onMeetingChanged((mid) => {
+        if (mid !== id) return
+        void api.meetings.get(id).then((fresh) => fresh && setM((prev) => (prev ? { ...prev, drive: fresh.drive, folderIds: fresh.folderIds } : prev)))
       }),
       api.events.onReset((mid, transcript) => mid === id && setM((prev) => (prev ? { ...prev, transcript } : prev))),
       // The call this meeting was recording has ended (or Stop was picked in the menu bar).
@@ -262,11 +267,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
                     className="danger"
                     onClick={() =>
                       act(async () => {
-                        const ok = await confirmDialog(`Delete “${m.title}”?`, {
-                          detail: 'Its notes and full transcript are removed from this computer (and from your other devices if sync is on). Copies already saved to Google Drive stay in Drive.',
-                          confirmLabel: 'Delete',
-                          danger: true
-                        })
+                        const ok = await confirmDeleteNote(m.title, !!m.drive?.docId)
                         if (!ok) return
                         // Don't let a pending autosave write the note back after it is gone.
                         clearTimeout(saveTimer.current)

@@ -1,6 +1,7 @@
 // In-app confirm dialog and right-click menus. Native window.confirm() is unreliable in Electron (it can be
 // swallowed on macOS and blocks the renderer), so every "are you sure?" goes through here instead.
 import { useEffect, useState } from 'react'
+import { api } from './api'
 
 interface ConfirmRequest {
   message: string
@@ -63,6 +64,21 @@ export function DialogHost() {
       </div>
     </div>
   )
+}
+
+/** The one "delete this note?" question, used from the sidebar and from the note itself. */
+export async function confirmDeleteNote(title: string, inDrive: boolean): Promise<boolean> {
+  const s = await api.settings.get().catch(() => null)
+  const drive = !inDrive
+    ? ''
+    : s?.driveDeleteWithNote === false
+      ? ' Its copy in Google Drive stays there.'
+      : ' Its Google Docs in Drive move to the Drive trash, where you can restore them for 30 days.'
+  return confirmDialog(`Delete “${title}”?`, {
+    detail: `Its notes and full transcript are removed from this computer (and from your other devices if sync is on).${drive}`,
+    confirmLabel: 'Delete',
+    danger: true
+  })
 }
 
 export interface MenuItem {
