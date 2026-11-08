@@ -25,6 +25,8 @@ try {
 }
 rmSync(target, { recursive: true, force: true })
 execFileSync('ditto', [built, target])
+// Finder metadata and quarantine flags on the copy would make codesign refuse it.
+execFileSync('xattr', ['-cr', target])
 
 // Builds without a Developer ID certificate still need a local (ad-hoc) signature to run on Apple silicon.
 try {

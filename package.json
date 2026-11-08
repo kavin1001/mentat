@@ -29,6 +29,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@floating-ui/dom": "^1.8.0",
     "@huggingface/transformers": "^4.3.2",
     "@mentat/sync-core": "file:packages/sync-core",
     "@noble/ciphers": "^2.0.0",
