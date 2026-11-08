@@ -100,6 +100,8 @@ code { background: #efede8; padding: 1px 5px; border-radius: 4px; font-size: 12p
 .dot.ai { background: #9aa6a4; }
 
 .dock { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); width: min(820px, calc(100% - 48px)); display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px; box-shadow: 0 8px 28px rgba(30, 30, 20, 0.08); }
+.dock button { white-space: nowrap; flex-shrink: 0; }
+.dock .select { min-width: 0; flex-shrink: 1; }
 .dock .select, .settings select { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--panel); }
 .rec { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 7px 14px 7px 10px; font-weight: 600; }
 .rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--rec); }
