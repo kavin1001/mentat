@@ -10,30 +10,45 @@ export function fmtTime(seconds: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
 }
 
-export function speakerLabel(seg: TranscriptSegment): string {
+/** Names the user gave the people on the "them" side, keyed by speaker index. */
+export type SpeakerNames = Record<string, string>
+
+export function speakerLabel(seg: TranscriptSegment, names: SpeakerNames = {}, multi = (seg.speakerIndex ?? 0) > 0): string {
   if (seg.speaker === 'me') return 'Me'
-  return seg.speakerIndex !== undefined && seg.speakerIndex > 0 ? `Them (${seg.speakerIndex + 1})` : 'Them'
+  const i = seg.speakerIndex ?? 0
+  if (names[i]) return names[i]
+  return multi ? `Speaker ${i + 1}` : 'Them'
+}
+
+/** True when the transcript has more than one distinct person on the "them" side. */
+export function hasMultipleSpeakers(segments: TranscriptSegment[]): boolean {
+  return new Set(segments.filter((s) => s.speaker === 'them').map((s) => s.speakerIndex ?? 0)).size > 1
 }
 
 /** Merge consecutive segments from the same speaker into readable turns. */
-export function transcriptTurns(segments: TranscriptSegment[]): { label: string; start: number; text: string }[] {
-  const turns: { label: string; start: number; text: string }[] = []
+export function transcriptTurns(
+  segments: TranscriptSegment[],
+  names: SpeakerNames = {}
+): { label: string; start: number; text: string; speaker: TranscriptSegment['speaker']; speakerIndex?: number }[] {
+  const turns: { label: string; start: number; text: string; speaker: TranscriptSegment['speaker']; speakerIndex?: number }[] = []
+  const multi = hasMultipleSpeakers(segments)
   for (const seg of [...segments].sort((a, b) => a.start - b.start)) {
-    const label = speakerLabel(seg)
+    const label = speakerLabel(seg, names, multi)
     const last = turns[turns.length - 1]
     if (last && last.label === label) last.text += ' ' + seg.text
-    else turns.push({ label, start: seg.start, text: seg.text })
+    else turns.push({ label, start: seg.start, text: seg.text, speaker: seg.speaker, speakerIndex: seg.speakerIndex })
   }
   return turns
 }
 
-export function transcriptToText(segments: TranscriptSegment[]): string {
-  return transcriptTurns(segments)
+export function transcriptToText(segments: TranscriptSegment[], names: SpeakerNames = {}): string {
+  return transcriptTurns(segments, names)
     .map((t) => `[${fmtTime(t.start)}] ${t.label}: ${t.text}`)
     .join('\n')
 }
 
-export function transcriptToSrt(segments: TranscriptSegment[]): string {
+export function transcriptToSrt(segments: TranscriptSegment[], names: SpeakerNames = {}): string {
+  const multi = hasMultipleSpeakers(segments)
   const ts = (x: number) => {
     const ms = Math.floor((x % 1) * 1000)
     const s = Math.floor(x)
@@ -43,7 +58,7 @@ export function transcriptToSrt(segments: TranscriptSegment[]): string {
   }
   return [...segments]
     .sort((a, b) => a.start - b.start)
-    .map((seg, i) => `${i + 1}\n${ts(seg.start)} --> ${ts(seg.end)}\n${speakerLabel(seg)}: ${seg.text}\n`)
+    .map((seg, i) => `${i + 1}\n${ts(seg.start)} --> ${ts(seg.end)}\n${speakerLabel(seg, names, multi)}: ${seg.text}\n`)
     .join('\n')
 }
 
@@ -72,7 +87,7 @@ export function meetingToMarkdown(m: Meeting, opts: { includeTranscript?: boolea
   if (m.attendees.length) out.push('', `**Attendees:** ${m.attendees.map((a) => a.name ?? a.email).join(', ')}`)
   out.push('', '## Notes', '', m.enhanced ? enhancedToMarkdown(m) : m.notes || '_No notes_')
   if (m.enhanced && m.notes.trim()) out.push('', '## My raw notes', '', m.notes)
-  if (opts.includeTranscript && m.transcript.length) out.push('', '## Transcript', '', transcriptToText(m.transcript))
+  if (opts.includeTranscript && m.transcript.length) out.push('', '## Transcript', '', transcriptToText(m.transcript, m.speakerNames))
   return out.join('\n') + '\n'
 }
 

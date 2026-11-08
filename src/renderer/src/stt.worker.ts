@@ -1,15 +1,17 @@
 /// <reference lib="webworker" />
 // On-device transcription worker. Receives interleaved stereo 16 kHz PCM16 (left = me, right = them),
-// splits each channel into utterances with a simple energy VAD, and transcribes each utterance with a
-// local Whisper / Moonshine model. Nothing leaves the machine.
-import { env, pipeline, type AutomaticSpeechRecognitionPipeline } from '@huggingface/transformers'
-import { STT_MODELS } from '../../shared/stt-models'
+// splits each channel into utterances with a simple energy VAD, transcribes each utterance with a local
+// Whisper / Moonshine model, streams live partial text while someone is still talking, and tells apart the
+// people on the "them" channel with a local speaker-embedding model. Nothing leaves the machine.
+import { AutoModel, AutoProcessor, env, pipeline, type AutomaticSpeechRecognitionPipeline, type PreTrainedModel, type Processor } from '@huggingface/transformers'
+import { DIARIZATION_MODEL, STT_MODELS } from '../../shared/stt-models'
+import { SpeakerClusterer } from '../../shared/speakers'
 
 type Speaker = 'me' | 'them'
 
 export type WorkerIn =
-  | { type: 'load'; model: string; language: string; ortBase: string }
-  | { type: 'start'; offset: number }
+  | { type: 'load'; model: string; language: string; ortBase: string; diarize: boolean }
+  | { type: 'start'; offset: number; meetingId: string }
   | { type: 'audio'; pcm: ArrayBuffer }
   | { type: 'stop' }
 
@@ -17,7 +19,8 @@ export type WorkerOut =
   | { type: 'progress'; file: string; loaded: number; total: number }
   | { type: 'ready'; device: string }
   | { type: 'speaking'; speaker: Speaker; active: boolean }
-  | { type: 'segment'; speaker: Speaker; text: string; start: number; end: number }
+  | { type: 'partial'; speaker: Speaker; text: string }
+  | { type: 'segment'; speaker: Speaker; speakerIndex?: number; text: string; start: number; end: number }
   | { type: 'drained' }
   | { type: 'error'; message: string }
 
@@ -38,12 +41,20 @@ const MIN_SPEECH = 0.4 * SR
 const END_SILENCE = 0.7 * SR
 const MAX_UTTERANCE = 20 * SR
 const PAD = 0.2 * SR
+const PARTIAL_EVERY_MS = 600 // how often live text refreshes while someone is talking
+const PARTIAL_WINDOW = 15 * SR // transcribe at most the last 15 s for live text
+const MIN_DIARIZE = 1 * SR // shorter utterances are too short to identify a voice reliably
 
 let asr: AutomaticSpeechRecognitionPipeline | null = null
 let language = 'en'
 let multilingual = true
 let offset = 0
 let sampleClock = 0 // samples received since start
+let diarize = true
+let spkProcessor: Processor | null = null
+let spkModel: PreTrainedModel | null = null
+const clusterer = new SpeakerClusterer()
+let currentMeeting = ''
 
 class ChannelVad {
   private buf: Float32Array[] = []
@@ -56,6 +67,25 @@ class ChannelVad {
   private frameAcc = new Float32Array(0)
 
   constructor(private speaker: Speaker) {}
+
+  get speaking(): boolean {
+    return this.speech
+  }
+
+  /** The utterance so far (last PARTIAL_WINDOW samples), for live text. */
+  snapshot(): Float32Array | null {
+    if (!this.speech || this.bufLen < 0.5 * SR) return null
+    const take = Math.min(this.bufLen, PARTIAL_WINDOW)
+    const out = new Float32Array(take)
+    let o = take
+    for (let i = this.buf.length - 1; i >= 0 && o > 0; i--) {
+      const b = this.buf[i]
+      const n = Math.min(b.length, o)
+      out.set(b.subarray(b.length - n), o - n)
+      o -= n
+    }
+    return out
+  }
 
   push(samples: Float32Array, clock: number): void {
     const merged = new Float32Array(this.frameAcc.length + samples.length)
@@ -116,7 +146,7 @@ class ChannelVad {
 
 const vads: Record<Speaker, ChannelVad> = { me: new ChannelVad('me'), them: new ChannelVad('them') }
 
-// Utterances are transcribed one at a time, in order.
+// Utterances are transcribed one at a time, in order; finished utterances always go before live text.
 const queue: { speaker: Speaker; audio: Float32Array; start: number; end: number }[] = []
 let busy = false
 let stopping = false
@@ -131,6 +161,13 @@ const JUNK = /^(\[.*\]|\(.*\)|thank you\.?|thanks for watching!?|you|\.|bye\.?)$
 
 const asrOptions = () => (multilingual ? { language: language === 'multi' ? undefined : language, task: 'transcribe' } : {})
 
+async function speakerOf(u: (typeof queue)[number]): Promise<number | undefined> {
+  if (!diarize || u.speaker !== 'them' || !spkModel || !spkProcessor || u.audio.length < MIN_DIARIZE) return undefined
+  const inputs = await spkProcessor(u.audio)
+  const out = (await spkModel(inputs)) as { embeddings: { data: Float32Array } }
+  return clusterer.assign(out.embeddings.data)
+}
+
 async function drain(): Promise<void> {
   if (busy || !asr) return
   busy = true
@@ -139,7 +176,14 @@ async function drain(): Promise<void> {
       const u = queue.shift()!
       const out = (await asr(u.audio, asrOptions())) as { text: string }
       const text = out.text.trim()
-      if (text && !JUNK.test(text)) post({ type: 'segment', speaker: u.speaker, text, start: offset + u.start, end: offset + u.end })
+      if (!text || JUNK.test(text)) continue
+      let speakerIndex: number | undefined
+      try {
+        speakerIndex = await speakerOf(u)
+      } catch (err) {
+        console.warn('speaker id failed', err)
+      }
+      post({ type: 'segment', speaker: u.speaker, speakerIndex, text, start: offset + u.start, end: offset + u.end })
     }
   } catch (err) {
     post({ type: 'error', message: `Transcription failed: ${(err as Error).message}` })
@@ -170,8 +214,34 @@ async function load(modelId: string, lang: string): Promise<void> {
   })) as AutomaticSpeechRecognitionPipeline
   // Warm up so the first real utterance is not slow.
   await asr(new Float32Array(SR), asrOptions())
+  if (diarize && !spkModel) {
+    spkProcessor = await AutoProcessor.from_pretrained(DIARIZATION_MODEL.id, { progress_callback: progress_callback as never })
+    spkModel = await AutoModel.from_pretrained(DIARIZATION_MODEL.id, { device: 'wasm', dtype: 'q8', progress_callback: progress_callback as never })
+  }
   post({ type: 'ready', device })
 }
+
+// Live text: while someone is talking and the model is idle, re-transcribe their utterance so far.
+let partialTurn: Speaker = 'them'
+setInterval(async () => {
+  if (busy || !asr || queue.length) return
+  const order: Speaker[] = partialTurn === 'me' ? ['them', 'me'] : ['me', 'them']
+  const speaker = order.find((s) => vads[s].speaking && vads[s].snapshot())
+  if (!speaker) return
+  partialTurn = speaker
+  const audio = vads[speaker].snapshot()!
+  busy = true
+  try {
+    const out = (await asr(audio, asrOptions())) as { text: string }
+    const text = out.text.trim()
+    if (text && !JUNK.test(text) && vads[speaker].speaking) post({ type: 'partial', speaker, text })
+  } catch {
+    // live text is best-effort
+  } finally {
+    busy = false
+    if (queue.length) void drain()
+  }
+}, PARTIAL_EVERY_MS)
 
 self.onmessage = async (e: MessageEvent<WorkerIn>) => {
   const msg = e.data
@@ -179,11 +249,15 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
     switch (msg.type) {
       case 'load':
         useLocalRuntime(msg.ortBase)
+        diarize = msg.diarize
         await load(msg.model, msg.language)
         break
       case 'start':
         offset = msg.offset
         sampleClock = 0
+        // Keep speaker numbering when a meeting is paused and resumed; start fresh for a new meeting.
+        if (msg.meetingId !== currentMeeting) clusterer.reset()
+        currentMeeting = msg.meetingId
         stopping = false
         break
       case 'audio': {

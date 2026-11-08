@@ -46,7 +46,7 @@ export default function MeetingScreen() {
       </View>
     )
 
-  const turns = transcriptTurns(meeting.transcript ?? [])
+  const turns = transcriptTurns(meeting.transcript ?? [], meeting.speakerNames)
   const tabs: { key: Tab; label: string; show: boolean }[] = [
     { key: 'notes', label: 'My notes', show: true },
     { key: 'enhanced', label: 'Enhanced', show: !!meeting.enhanced },
@@ -171,7 +171,7 @@ export default function MeetingScreen() {
         {tab === 'transcript' &&
           turns.map((t, i) => (
             <View key={i} style={st.turn}>
-              <Text style={[st.speaker, t.label === 'Me' && { color: colors.accent }]}>
+              <Text style={[st.speaker, t.speaker === 'me' && { color: colors.accent }]}>
                 {t.label} <Text style={st.ts}>{fmtTime(t.start)}</Text>
               </Text>
               <Text selectable style={st.turnText}>

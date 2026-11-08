@@ -5,6 +5,7 @@ import { api } from './api'
 import { wsApi, type WorkspacesStatus } from './wsApi'
 import { startCapture, type CaptureHandle } from './audio'
 import { ChatPanel } from './ChatPanel'
+import { NoteEditor } from './NoteEditor'
 import { beginTranscription, endTranscription, ensureModel, onTranscriber } from './transcriber'
 
 interface Props {
@@ -26,6 +27,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
   const [systemAudio, setSystemAudio] = useState(true)
   const [levels, setLevels] = useState<[number, number]>([0, 0])
   const [speaking, setSpeaking] = useState<Record<Speaker, boolean>>({ me: false, them: false })
+  const [partial, setPartial] = useState<Record<Speaker, string>>({ me: '', them: '' })
+  const [renaming, setRenaming] = useState<{ index: number; value: string } | null>(null)
   const [modelStatus, setModelStatus] = useState<string | null>(null)
   const [enhancing, setEnhancing] = useState(false)
   const [menu, setMenu] = useState(false)
@@ -52,10 +55,14 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
       api.events.onFinal((mid, seg) => {
         if (mid !== id) return
         setM((prev) => (prev ? { ...prev, transcript: [...prev.transcript, seg].sort((a, b) => a.start - b.start) } : prev))
+        setPartial((p) => ({ ...p, [seg.speaker]: '' }))
       }),
       api.events.onReset((mid, transcript) => mid === id && setM((prev) => (prev ? { ...prev, transcript } : prev))),
       onTranscriber((msg) => {
-        if (msg.type === 'speaking') setSpeaking((p) => ({ ...p, [msg.speaker]: msg.active }))
+        if (msg.type === 'speaking') {
+          setSpeaking((p) => ({ ...p, [msg.speaker]: msg.active }))
+          if (msg.active) setPartial((p) => ({ ...p, [msg.speaker]: '' }))
+        } else if (msg.type === 'partial') setPartial((p) => ({ ...p, [msg.speaker]: msg.text }))
         else if (msg.type === 'progress' && msg.total) setModelStatus(`Downloading speech model ${Math.round((msg.loaded / msg.total) * 100)}%`)
         else if (msg.type === 'error') onError(msg.message)
       })
@@ -83,7 +90,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
       await api.app.permissions()
       const s = await api.settings.get()
       setModelStatus('Loading speech model…')
-      await ensureModel(s.sttModel, s.language)
+      await ensureModel(s.sttModel, s.language, s.diarize ?? true)
       setModelStatus(null)
       const { offset } = await api.recording.start(id)
       beginTranscription(id, offset)
@@ -108,6 +115,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
     await endTranscription()
     setModelStatus(null)
     setSpeaking({ me: false, them: false })
+    setPartial({ me: '', them: '' })
     await api.recording.stop()
   }
 
@@ -137,7 +145,15 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
 
   if (!m) return <div className="page muted">Loading…</div>
 
-  const turns = transcriptTurns(m.transcript)
+  const turns = transcriptTurns(m.transcript, m.speakerNames)
+  const saveSpeakerName = () => {
+    if (!renaming) return
+    const names = { ...(m.speakerNames ?? {}) }
+    if (renaming.value.trim()) names[renaming.index] = renaming.value.trim()
+    else delete names[renaming.index]
+    patch({ speakerNames: names })
+    setRenaming(null)
+  }
   const when = new Date(m.startedAt ?? m.createdAt)
 
   return (
@@ -250,11 +266,10 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
         </header>
 
         {tab === 'notes' || !m.enhanced ? (
-          <textarea
-            className="notepad"
-            placeholder={'Write notes as the meeting happens…\n\nJust the bits that matter to you. Mentat fills in the rest from the transcript.'}
+          <NoteEditor
             value={m.notes}
-            onChange={(e) => patch({ notes: e.target.value }, true)}
+            placeholder="Write notes as the meeting happens. Just the bits that matter to you; Mentat fills in the rest from the transcript."
+            onChange={(notes) => patch({ notes }, true)}
           />
         ) : (
           <article className="enhanced">
@@ -338,9 +353,26 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
             <div className="transcript">
               {!turns.length && <p className="muted small">The full transcript appears here as people talk. Speech is transcribed on this computer and saved locally; no bot joins the call.</p>}
               {turns.map((t, i) => (
-                <div key={i} className={`turn ${t.label === 'Me' ? 'me' : 'them'}`}>
+                <div key={i} className={`turn ${t.speaker}`}>
                   <div className="turn-meta">
-                    {t.label} · {fmtTime(t.start)}
+                    {t.speaker === 'them' && renaming?.index === (t.speakerIndex ?? 0) ? (
+                      <input
+                        className="rename"
+                        autoFocus
+                        value={renaming.value}
+                        placeholder="Name"
+                        onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+                        onBlur={saveSpeakerName}
+                        onKeyDown={(e) => (e.key === 'Enter' ? saveSpeakerName() : e.key === 'Escape' && setRenaming(null))}
+                      />
+                    ) : t.speaker === 'them' ? (
+                      <button className="speaker-name" title="Click to name this speaker" onClick={() => setRenaming({ index: t.speakerIndex ?? 0, value: m.speakerNames?.[t.speakerIndex ?? 0] ?? '' })}>
+                        {t.label}
+                      </button>
+                    ) : (
+                      t.label
+                    )}{' '}
+                    · {fmtTime(t.start)}
                   </div>
                   <div>{t.text}</div>
                 </div>
@@ -349,8 +381,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
                 (s) =>
                   speaking[s] && (
                     <div key={s} className={`turn ${s} partial`}>
-                      <div className="turn-meta">{s === 'me' ? 'Me' : 'Them'} · speaking</div>
-                      <div>…</div>
+                      <div className="turn-meta">{s === 'me' ? 'Me' : 'Them'} · live</div>
+                      <div>{partial[s] || '…'}</div>
                     </div>
                   )
               )}

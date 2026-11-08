@@ -163,3 +163,27 @@ code { background: #efede8; padding: 1px 5px; border-radius: 4px; font-size: 12p
 .device-list li { padding: 6px 0; border-bottom: 1px solid var(--line); }
 .pair-box { display: flex; gap: 20px; align-items: center; margin-top: 10px; }
 .pair-box img { border-radius: 10px; border: 1px solid var(--line); background: white; image-rendering: pixelated; }
+
+/* rich-text notepad */
+.note-editor-wrap { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.notepad .note-editor { outline: none; min-height: 100%; }
+.notepad .note-editor p { margin: 0 0 6px; }
+.notepad .note-editor h1, .notepad .note-editor h2, .notepad .note-editor h3 { font-family: var(--serif); margin: 16px 0 6px; }
+.notepad .note-editor h1 { font-size: 22px; } .notepad .note-editor h2 { font-size: 19px; } .notepad .note-editor h3 { font-size: 17px; }
+.notepad .note-editor ul, .notepad .note-editor ol { padding-left: 22px; margin: 0 0 6px; }
+.notepad .note-editor blockquote { border-left: 3px solid var(--line); margin: 0 0 6px; padding-left: 12px; color: var(--ink-2); }
+.notepad .note-editor ul[data-type='taskList'] { list-style: none; padding-left: 2px; }
+.notepad .note-editor ul[data-type='taskList'] li { display: flex; gap: 8px; align-items: flex-start; }
+.notepad .note-editor ul[data-type='taskList'] li > label { margin-top: 3px; }
+.notepad .note-editor li[data-checked='true'] > div { color: var(--ink-3); text-decoration: line-through; }
+.notepad .note-editor code { font-size: 13px; }
+.notepad .note-editor a { color: var(--accent); }
+.notepad .note-editor p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: #b5b1a8; float: left; height: 0; pointer-events: none; }
+.bubble-menu { display: flex; gap: 2px; background: var(--ink); border-radius: 8px; padding: 3px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2); }
+.bubble-menu button { background: none; border: 0; color: #e9e6dd; min-width: 28px; height: 26px; border-radius: 5px; font-weight: 600; }
+.bubble-menu button:hover, .bubble-menu button.on { background: rgba(255, 255, 255, 0.16); color: white; }
+
+/* speaker names */
+.speaker-name { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: text; border-bottom: 1px dashed transparent; }
+.speaker-name:hover { border-bottom-color: var(--ink-3); }
+.turn-meta .rename { font: inherit; font-size: 11px; border: 1px solid var(--accent); border-radius: 4px; padding: 1px 4px; width: 120px; outline: none; }

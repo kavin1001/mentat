@@ -136,7 +136,7 @@ server.registerTool(
     const { m, src } = r
     if (!m.transcript.length) return text('This meeting has no transcript.')
     const head = src.workspaceId ? `(Shared in "${src.label}" by ${m.sharedBy ?? 'another member'}; "Me" is ${m.sharedBy ?? 'them'}.)\n\n` : ''
-    return text(head + transcriptToText(m.transcript))
+    return text(head + transcriptToText(m.transcript, m.speakerNames))
   }
 )
 
