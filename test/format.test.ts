@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { transcriptToText, transcriptToSrt } from '../src/shared/format'
+import { meetingToDocHtml, transcriptToText, transcriptToSrt } from '../src/shared/format'
 import { removeEcho } from '../src/shared/echo'
 import type { TranscriptSegment } from '../src/shared/types'
 
@@ -32,4 +32,18 @@ test('echo of the other side is removed from the mic channel', () => {
     seg('me', 30, 'Great, I will send the security pack.')
   ])
   assert.deepEqual(out.map((s) => s.start), [10, 30])
+})
+
+test('Drive doc puts the transcript after the notes, behind a page break', () => {
+  const html = meetingToDocHtml({
+    id: 'm1', title: 'Acme sync', createdAt: '2026-11-08T10:00:00Z', updatedAt: '2026-11-08T10:00:00Z',
+    attendees: [], folderIds: [], notes: '- pricing',
+    transcript: [{ id: 's1', speaker: 'them', text: 'Let us talk pricing', start: 0, end: 3 }]
+  })
+  const brk = html.indexOf('page-break-before: always')
+  assert.ok(brk > html.indexOf('pricing'), 'notes come first')
+  assert.ok(html.indexOf('Let us talk pricing') > brk, 'transcript comes after the break')
+  assert.equal(html.match(/<html>/g)?.length, 1)
+  const noTranscript = meetingToDocHtml({ id: 'm2', title: 'x', createdAt: '2026-11-08T10:00:00Z', updatedAt: '2026-11-08T10:00:00Z', attendees: [], folderIds: [], notes: 'n', transcript: [] })
+  assert.ok(!noTranscript.includes('page-break'))
 })
