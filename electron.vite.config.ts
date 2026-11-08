@@ -19,6 +19,10 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     plugins: [react()],
+    // Pre-bundle the speech model runtime so Vite does not reload the window the first time the worker starts.
+    optimizeDeps: { include: ['@huggingface/transformers'] },
+    // Same cross-origin isolation as the app:// handler, so ONNX Runtime can use threads in dev too.
+    server: { headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'credentialless' } },
     build: { rollupOptions: { input: resolve(__dirname, 'src/renderer/index.html') } }
   }
 })
