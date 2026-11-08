@@ -48,6 +48,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run dist:dir
+      - name: Mic helper reports the apps using the mic
+        if: runner.os == 'macOS'
+        run: |
+          out=$(resources/bin/mic-monitor --once)
+          echo "$out"
+          echo "$out" | node -e "const a=JSON.parse(require('fs').readFileSync(0,'utf8')); if(!Array.isArray(a)) process.exit(1)"
+          test -x dist/mac-arm64/Mentat.app/Contents/Resources/mic-monitor
+          test -f dist/mac-arm64/Mentat.app/Contents/Resources/icons/trayTemplate.png
       - name: Launch packaged app
         run: node scripts/smoke.mjs "${{ matrix.exe }}"
         shell: bash

@@ -187,3 +187,10 @@ code { background: #efede8; padding: 1px 5px; border-radius: 4px; font-size: 12p
 .speaker-name { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: text; border-bottom: 1px dashed transparent; }
 .speaker-name:hover { border-bottom-color: var(--ink-3); }
 .turn-meta .rename { font: inherit; font-size: 11px; border: 1px solid var(--accent); border-radius: 4px; padding: 1px 4px; width: 120px; outline: none; }
+
+/* Call detected prompt (its own small window) */
+body.call-prompt-body { background: #fff; overflow: hidden; -webkit-app-region: drag; }
+.call-prompt { display: flex; align-items: center; gap: 12px; height: 100vh; padding: 0 16px; box-sizing: border-box; }
+.call-prompt-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.call-prompt-text strong, .call-prompt-text span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call-prompt-actions { display: flex; gap: 6px; -webkit-app-region: no-drag; }

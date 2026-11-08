@@ -172,6 +172,23 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
       </section>
 
       <section className="card">
+        <h3>Calls</h3>
+        <p className="muted small">
+          Mentat notices when Zoom, Google Meet, Teams, Slack, FaceTime and similar apps start using your microphone, and
+          offers to take notes. It only checks which app holds the mic; nothing is recorded until you say so.
+        </p>
+        <label className="check">
+          <input type="checkbox" checked={s.autoDetectCalls ?? true} onChange={(e) => set('autoDetectCalls', e.target.checked)} /> Offer to take notes when a call starts
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={s.autoStopRecording ?? true} onChange={(e) => set('autoStopRecording', e.target.checked)} /> Stop recording when the call ends
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={s.openAtLogin ?? true} onChange={(e) => set('openAtLogin', e.target.checked)} /> Open Mentat in the background when I log in
+        </label>
+      </section>
+
+      <section className="card">
         <h3>Use your meetings in Claude (MCP)</h3>
         <p className="muted small">Add this to Claude Desktop’s config (Settings → Developer → Edit config) or Claude Code’s .mcp.json. Claude can then list, search and read every note and full transcript.</p>
         <pre className="code">{mcpConfig}</pre>

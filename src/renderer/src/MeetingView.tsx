@@ -58,6 +58,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
         setPartial((p) => ({ ...p, [seg.speaker]: '' }))
       }),
       api.events.onReset((mid, transcript) => mid === id && setM((prev) => (prev ? { ...prev, transcript } : prev))),
+      // The call this meeting was recording has ended (or Stop was picked in the menu bar).
+      api.events.onAutoStop((mid) => mid === id && void stopRef.current()),
       onTranscriber((msg) => {
         if (msg.type === 'speaking') {
           setSpeaking((p) => ({ ...p, [msg.speaker]: msg.active }))
@@ -118,6 +120,9 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
     setPartial({ me: '', them: '' })
     await api.recording.stop()
   }
+
+  const stopRef = useRef(stop)
+  stopRef.current = stop
 
   const enhance = async () => {
     if (recording) await stop()

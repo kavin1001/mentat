@@ -8,7 +8,9 @@ Google Drive folder automatically.
 
 ## What it does
 
-- **Records any call** (Zoom, Meet, Teams, Slack, anything with sound). Nobody else sees a bot.
+- **Notices your calls.** When Zoom, Google Meet, Teams, Slack, FaceTime or similar start using your mic, a small
+  prompt offers to take notes. Recording stops by itself when the call ends. Nobody else sees a bot.
+- **Lives in your menu bar** (or the Windows tray) and opens at login, so it's ready before your first call.
 - **Transcribes on your computer** with an open-source Whisper model. Audio never leaves your machine.
   Text appears live as people talk, and different voices on the call are told apart as Speaker 1, 2, 3
   (click a name to rename it).
@@ -23,7 +25,7 @@ Google Drive folder automatically.
 
 ## Get started
 
-You need [Node.js 22+](https://nodejs.org).
+You need [Node.js 22+](https://nodejs.org), and on a Mac the Xcode command line tools (`xcode-select --install`).
 
 ```bash
 git clone https://github.com/kavin1001/mentat.git
@@ -42,7 +44,8 @@ Then, in **Settings**:
 On a Mac, allow **Microphone** and **Screen & System Audio Recording** the first time you record. Mentat needs
 the second one to hear the other people on the call; it never records your screen.
 
-To build an app you can keep: `npm run dist:mac` or `npm run dist:win` (output in `dist/`).
+To install it as a normal app on your Mac, run `npm run install:mac`. It builds Mentat, puts it in
+**Applications** and opens it. Run it again to update. On Windows, `npm run dist:win` builds an installer in `dist/`.
 
 ## Use your meetings in Claude
 
@@ -81,6 +84,8 @@ Your data lives in `~/Mentat` as JSON, Markdown and plain-text files.
 
 ## Limits to know about
 
+- Call detection needs macOS 14 or newer (or Windows 10+). It sees *which app* is using the mic, so a browser
+  using the mic for something other than a call can also trigger the prompt; just pick *Not now*.
 - Telling voices apart works best when people talk for a second or more at a time. People with similar voices
   can end up with the same label, and one person can occasionally get two. Give both labels the same name to merge them.
 - Live text is redrawn about twice a second while someone speaks, then replaced by the final line when they pause.
