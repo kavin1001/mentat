@@ -25,9 +25,11 @@ const post = (m: WorkerOut) => (self as unknown as DedicatedWorkerGlobalScope).p
 
 // Runtime from the app bundle, never from a CDN.
 env.allowLocalModels = false
+// The runtime is already a local file; the Cache API cannot store app:// URLs anyway.
+env.useWasmCache = false
 const onnx = env.backends.onnx as { wasm?: { wasmPaths?: unknown; numThreads?: number } }
 function useLocalRuntime(base: string): void {
-  if (onnx.wasm) onnx.wasm.wasmPaths = { mjs: `${base}ort-wasm-simd-threaded.jsep.mjs`, wasm: `${base}ort-wasm-simd-threaded.jsep.wasm` }
+  if (onnx.wasm) onnx.wasm.wasmPaths = { mjs: `${base}ort-wasm-simd-threaded.asyncify.mjs`, wasm: `${base}ort-wasm-simd-threaded.asyncify.wasm` }
 }
 
 const SR = 16000
@@ -127,13 +129,15 @@ function enqueue(u: (typeof queue)[number]): void {
 // Whisper hallucinates these on silence/noise.
 const JUNK = /^(\[.*\]|\(.*\)|thank you\.?|thanks for watching!?|you|\.|bye\.?)$/i
 
+const asrOptions = () => (multilingual ? { language: language === 'multi' ? undefined : language, task: 'transcribe' } : {})
+
 async function drain(): Promise<void> {
   if (busy || !asr) return
   busy = true
   try {
     while (queue.length) {
       const u = queue.shift()!
-      const out = (await asr(u.audio, multilingual ? { language: language === 'multi' ? undefined : language, task: 'transcribe' } : {})) as { text: string }
+      const out = (await asr(u.audio, asrOptions())) as { text: string }
       const text = out.text.trim()
       if (text && !JUNK.test(text)) post({ type: 'segment', speaker: u.speaker, text, start: offset + u.start, end: offset + u.end })
     }
@@ -165,7 +169,7 @@ async function load(modelId: string, lang: string): Promise<void> {
     progress_callback: progress_callback as never
   })) as AutomaticSpeechRecognitionPipeline
   // Warm up so the first real utterance is not slow.
-  await asr(new Float32Array(SR))
+  await asr(new Float32Array(SR), asrOptions())
   post({ type: 'ready', device })
 }
 
