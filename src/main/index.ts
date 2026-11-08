@@ -10,6 +10,7 @@ import { loadSettings, saveSettings } from './settings'
 import { chat, classifyMeeting, enhanceNotes, followUpEmail, preMeetingBrief } from './claude'
 import { removeEcho } from '../shared/echo'
 import { driveFolderTree, googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
+import { SyncManager } from './sync/manager'
 
 // macOS 13+: let getDisplayMedia return system audio through ScreenCaptureKit, with no virtual audio driver.
 if (process.platform === 'darwin') {
@@ -38,6 +39,7 @@ function serveRenderer(): void {
 
 const store = new Store()
 let settings: Settings
+let sync: SyncManager | null = null
 let win: BrowserWindow | null = null
 
 function createWindow(): void {
@@ -257,6 +259,11 @@ app.whenReady().then(() => {
   serveRenderer()
   registerIpc()
 
+  // Optional sync (phone on this network and/or cloud profile). Off by default.
+  sync = new SyncManager(store, { dataChanged: () => send('sync:dataChanged'), statusChanged: (s) => send('sync:status', s) })
+  sync.registerIpc(ipcMain)
+  void sync.start()
+
   // System audio capture: answer getDisplayMedia with the primary screen plus loopback audio.
   // The renderer discards the video track and keeps only the audio.
   session.defaultSession.setDisplayMediaRequestHandler(
@@ -274,5 +281,6 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopRecording()
+  if (process.platform !== 'darwin') void sync?.stop()
   if (process.platform !== 'darwin') app.quit()
 })

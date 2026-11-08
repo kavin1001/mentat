@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { GoogleStatus, Settings, Template } from '../../shared/types'
 import { api } from './api'
 import { STT_MODELS } from '../../shared/stt-models'
+import { SyncSettings } from './SyncSettings'
 
 const MODELS = [
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (best notes)' },
@@ -170,6 +171,8 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
           Copy config
         </button>
       </section>
+
+      <SyncSettings onError={onError} />
 
       <section className="card">
         <h3>Your data</h3>
