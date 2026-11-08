@@ -25,63 +25,131 @@ into clean notes, and files every note into the right folder in Google Drive.
 | Claude via MCP | `out/main/mcp-server.js` is a stdio MCP server (list, search, get meeting, get transcript, list workspaces, update notes), covering your own meetings and those shared with you. Settings shows a ready-to-paste Claude Desktop config. |
 | Models | Claude Opus 5.5 by default; Sonnet 5.5 or Haiku 5.5 selectable. Refusal fallback enabled. |
 
-## Setup
+## Install
+
+Only steps 1 and 2 are required. With just those, Mentat runs entirely on your
+computer: no account, no server.
+
+### 1. Desktop app (macOS 13+ or Windows 10+)
+
+You need [Node.js 22](https://nodejs.org) or newer and git. There are no signed installers yet, so build it
+from source:
 
 ```bash
+git clone https://github.com/kavin1001/mentat.git
+cd mentat
 npm install
-npm run dev          # run the app with hot reload
-npm run dist:mac     # build a .dmg (or dist:win)
+npm run dev          # run the app (with hot reload)
+npm run dist:mac     # or: npm run dist:win, to build an installer you can keep in Applications
 ```
 
-In **Settings** add:
+On macOS, grant **Microphone** and **Screen & System Audio Recording** the first time you record (System
+Settings → Privacy & Security). Without screen recording, Mentat records your mic only and says so.
 
-1. **Anthropic API key** for notes, chat, briefs and emails.
-2. **Speech model**: pick one (Whisper small is the default). It downloads the first time you record.
-3. **Google OAuth client** (type "Desktop app", with Calendar API and Drive API enabled), then **Connect Google**.
+### 2. Claude and on-device transcription
 
-On macOS, grant Microphone and Screen & System Audio Recording permission the first time you record.
-If system audio is blocked, Mentat falls back to mic-only and says so in the dock.
+Open **Settings** in the app:
 
-### Using your meetings from Claude Desktop / Claude Code
+1. **Claude**: paste an [Anthropic API key](https://console.anthropic.com). It's used for enhanced notes, chat,
+   briefs, follow-up emails and Drive filing. Transcription never uses it.
+2. **Transcription (on this computer)**: pick a speech model. *Whisper small* is the default; *Whisper large-v3
+   turbo* is more accurate on a fast GPU, *Whisper base* and *Moonshine base* (English only) are lighter. The
+   model downloads once from Hugging Face the first time you record (about 80 MB to 800 MB), then works offline.
+   It runs on your GPU through WebGPU when available, otherwise on the CPU. Audio never leaves your computer.
 
-Copy the config from Settings → "Use your meetings in Claude (MCP)", or for development:
+### 3. Google Calendar and Drive (optional)
+
+In Google Cloud Console, create an OAuth client of type **Desktop app** and enable the Calendar API and Drive
+API. Paste its client ID and secret into Settings → **Google Drive and Calendar**, then click **Connect Google**.
+Mentat asks only for read access to your calendar and for the Drive files it creates.
+
+### 4. Your meetings in Claude Desktop or Claude Code (optional)
+
+Settings → **Use your meetings in Claude (MCP)** shows a config to paste into Claude Desktop. In development:
 
 ```json
 { "mcpServers": { "mentat": { "command": "node", "args": ["/path/to/mentat/out/main/mcp-server.js"] } } }
 ```
 
-## Phone app and sync
+Run `npm run build` once first so `out/main/mcp-server.js` exists. Claude can then list, search and read every
+meeting you can access, including ones teammates share with you (see Shared workspaces below).
 
-Mentat works with no account and no server. Two optional ways to use it on your phone:
+### 5. Phone app (optional)
 
-- **Phone on this network** (no password): Settings → Phone on this network → Pair a phone, then scan
-  the code with the Mentat phone app (`mobile/`). The phone syncs directly with this computer over Wi-Fi.
-- **Cloud features** (password-gated): create a profile on a Mentat sync server (`sync-server/`, self-hostable)
-  to sync from anywhere. Notes are end-to-end encrypted with a key derived from your password on your devices.
+The phone companion lives in `mobile/` (Expo). There's no App Store build yet, so install a development build:
 
-Both use the same protocol (`packages/sync-core`). Sync state is kept in `~/Mentat/.sync/`; secrets are stored
-in the OS keychain. See `mobile/README.md` and `sync-server/README.md`.
+```bash
+cd mobile
+npm install
+npx expo run:ios        # or: npx expo run:android  (needs Xcode or Android Studio)
+```
 
-## Shared workspaces
+Then either pair it over Wi-Fi with no account (desktop: Settings → **Phone on this network** → Pair a phone;
+phone: Connect → Scan pairing code), or sign both in to the same cloud profile. See `mobile/README.md`.
 
-Optional, and built on cloud features: other people with a profile on the same sync server can join your
-workspace and read the meetings you share to it, including enhanced notes and full transcripts.
+## Backend: the sync server (optional)
 
-- **Create and invite**: Settings → Shared workspaces → Create workspace, open it, then Create invite code.
-  Codes are single use, last 7 days, and carry the workspace key, so send them privately.
-- **Roles**: *viewer* (read), *editor* (read, and share their own meetings), *owner* (manage members and
-  invites, delete the workspace). The server enforces roles, and a member can only change meetings they shared.
-- **What's shared**: tick folders in the workspace settings (every meeting in them is shared), or share a single
-  meeting from its ⋯ menu. Shared copies leave out your folders and Drive links.
-- **Reading**: shared meetings appear under *Workspaces* in the sidebar (read-only), and are cached decrypted in
-  `~/Mentat/workspaces/<id>/`. The MCP server reads them too, so each member's Claude can search, list and read
-  every meeting that member has access to (`list_workspaces`, plus a `workspace` filter on the other tools).
-- **Removing someone** deletes their access, removes the cached copies from their computer on its next sync, and
-  rotates the workspace key so anything shared afterwards is encrypted with a key they never had.
+Mentat has no hosted backend. Cloud sync (phone from anywhere) and shared workspaces use a small relay you host
+yourself, in `sync-server/`. It's one Node process with a SQLite file. It stores only ciphertext: notes,
+transcripts, names and workspace keys are encrypted on your devices, so whoever runs it can't read them.
 
-Encryption: each profile has an X25519 key derived from its password; the workspace keyring is sealed to each
-member's key. Invites bind the joiner's key with a MAC only the invite holder can make, and the owner checks it
-before sealing new keys, so a sync server can't slip in its own key. Details in `packages/sync-core/src/workspace.ts`.
+```bash
+# from the repository root
+docker build -f sync-server/Dockerfile -t mentat-sync .
+docker run -d --name mentat-sync -p 8787:8787 -v mentat-sync:/data \
+  -e MENTAT_SIGNUP_CODE=pick-a-code \
+  -e MENTAT_SERVER_SECRET=$(openssl rand -hex 32) \
+  mentat-sync
+```
+
+Or without Docker (Node 22.13+): `cd sync-server && npm install && npm run build && MENTAT_SIGNUP_CODE=pick-a-code npm start`.
+
+Then:
+
+1. Put it behind **HTTPS** at a stable URL: a reverse proxy (Caddy, nginx) on your own machine, or a host with a
+   persistent volume for `/data` (Fly.io, Render, Railway).
+2. In the desktop app: Settings → **Cloud features** → Create profile, with that URL, a username, a password
+   (10+ characters) and the signup code. Your password is your encryption key: if you forget it, the synced copy
+   can't be recovered (your local notes are fine).
+3. Give teammates the URL and signup code so they can create their own profiles. Once everyone has one, you can
+   set `MENTAT_ALLOW_SIGNUPS=false` to close signups.
+
+All settings, the protocol and the tests are in `sync-server/README.md`.
+
+## Shared workspaces (teams)
+
+Other people can join your workspace to read the meetings you share to it, including enhanced notes and full
+transcripts, in Mentat and through their own Claude. It's opt-in and needs the sync server above.
+
+**Owner (you):**
+
+1. Settings → **Shared workspaces** → type a name → **Create workspace**.
+2. Click the workspace to open it. Under *What you share here*, tick the folders to share (every meeting in them,
+   including future ones, is shared). To share one meeting, use its ⋯ menu → *Share to …*.
+3. Under *Invite someone*, pick **Viewer** (can read) or **Editor** (can read and share their own meetings), then
+   **Create invite code** and send the `mentat-invite:…` code privately (DM, not a public channel). Each code
+   works once and expires after 7 days; make one per person.
+
+**Teammate joining:**
+
+1. Install the desktop app (steps 1 and 2 above).
+2. Settings → **Cloud features** → **Create profile** on *the same sync server URL* as the owner, with the
+   signup code they gave you.
+3. Settings → **Shared workspaces** → paste the invite code → **Join**.
+4. Shared meetings appear in the sidebar under **Workspaces** (read-only). If they set up the MCP server
+   (step 4 above), their Claude can also search and read every meeting they have access to.
+
+**Managing access:** the owner can change roles or **Remove** someone in the workspace's member list. Removing
+someone ends their access, deletes the shared copies from their computer on its next sync, and replaces the
+workspace key so they can't read anything shared later. Members can **Leave**; the owner can **Delete** the
+workspace for everyone. Each member's key fingerprint is shown next to their name, so you can compare it with
+the one in their Settings if you want to be sure who joined.
+
+How it's secured: each profile has an X25519 key derived from its password, and the workspace key is sealed to
+each member's key. An invite binds the joiner's key with a MAC only the invite holder can make, and the owner's
+app checks it before sharing new keys, so the sync server can't slip in a key of its own. The server enforces
+roles (viewers can't write, members can only change what they shared). Details in
+`packages/sync-core/src/workspace.ts`.
 
 ## Layout
 
