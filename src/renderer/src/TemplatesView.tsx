@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { confirmDialog } from './Dialogs'
 import type { Template } from '../../shared/types'
 import { api } from './api'
 
@@ -43,7 +44,7 @@ export function TemplatesView() {
                   <button className="btn" onClick={() => setEdit(t)}>
                     Edit
                   </button>
-                  <button className="btn ghost danger" onClick={async () => { await api.templates.remove(t.id); void load() }}>
+                  <button className="btn ghost danger" onClick={async () => { if (!(await confirmDialog(`Delete the template “${t.name}”?`, { confirmLabel: 'Delete', danger: true }))) return; await api.templates.remove(t.id); void load() }}>
                     Delete
                   </button>
                 </>

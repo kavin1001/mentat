@@ -1,6 +1,7 @@
 // Settings → "Shared workspaces". Needs cloud features (a profile on a sync relay). The owner invites
 // people with single-use codes; viewers read shared notes and transcripts, editors can also share their
 // own meetings, and everyone's Claude (through the Mentat MCP server) can read what they have access to.
+import { confirmDialog } from './Dialogs'
 import { useEffect, useState } from 'react'
 import type { Folder } from '../../shared/types'
 import { api } from './api'
@@ -156,8 +157,9 @@ export function WorkspacesSettings({ onError }: { onError: (m: string) => void }
                       className="link danger"
                       disabled={busy}
                       onClick={() =>
-                        confirm(`Remove ${m.username}? They lose access, their copies are deleted from their computer on its next sync, and the workspace key is replaced.`) &&
-                        run(() => wsApi.removeMember(ws.id, m.username), true)
+                        void confirmDialog(`Remove ${m.username}?`, { detail: 'They lose access, their copies are deleted from their computer on its next sync, and the workspace key is replaced.', confirmLabel: 'Remove', danger: true }).then(
+                          (ok) => { if (ok) void run(() => wsApi.removeMember(ws.id, m.username), true) }
+                        )
                       }
                     >
                       Remove
@@ -227,7 +229,7 @@ export function WorkspacesSettings({ onError }: { onError: (m: string) => void }
               <button
                 className="link danger"
                 disabled={busy}
-                onClick={() => confirm(`Delete “${ws.name}” for everyone? Your own notes stay on your computer.`) && run(() => wsApi.remove(ws.id))}
+                onClick={() => void confirmDialog(`Delete “${ws.name}” for everyone?`, { detail: 'Your own notes stay on your computer.', confirmLabel: 'Delete workspace', danger: true }).then((ok) => { if (ok) void run(() => wsApi.remove(ws.id)) })}
               >
                 Delete workspace
               </button>
@@ -235,7 +237,7 @@ export function WorkspacesSettings({ onError }: { onError: (m: string) => void }
               <button
                 className="link danger"
                 disabled={busy}
-                onClick={() => confirm(`Leave “${ws.name}”? Its shared meetings are removed from this computer.`) && run(() => wsApi.leave(ws.id))}
+                onClick={() => void confirmDialog(`Leave “${ws.name}”?`, { detail: 'Its shared meetings are removed from this computer.', confirmLabel: 'Leave', danger: true }).then((ok) => { if (ok) void run(() => wsApi.leave(ws.id)) })}
               >
                 Leave workspace
               </button>

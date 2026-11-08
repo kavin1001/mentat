@@ -5,3 +5,7 @@ dist
 *.log
 src/renderer/public/ort
 resources/bin
+# Build-time secrets such as Mentat's Google OAuth client (see docs/google-drive.md)
+.env
+.env.*
+!.env.example

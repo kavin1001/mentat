@@ -31,6 +31,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck && npm test
       - run: npm run build
+        env:
+          # Mentat's Google sign-in client, so "Connect Google Drive" works in released builds (docs/google-drive.md).
+          MAIN_VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          MAIN_VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       - name: Build, sign and publish
         run: npx electron-builder ${{ matrix.target }} --config electron-builder.config.cjs --publish always
         shell: bash

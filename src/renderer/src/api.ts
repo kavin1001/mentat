@@ -60,7 +60,8 @@ export const api = {
   google: {
     status: () => inv<GoogleStatus>('google:status'),
     connect: () => inv<GoogleStatus>('google:connect'),
-    disconnect: () => inv<void>('google:disconnect'),
+    cancel: () => inv<void>('google:cancel'),
+    disconnect: () => inv<GoogleStatus>('google:disconnect'),
     events: () => inv<CalendarEvent[]>('calendar:events')
   },
   drive: {

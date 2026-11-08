@@ -143,6 +143,14 @@ export interface ChatMessage {
 export interface GoogleStatus {
   connected: boolean
   email?: string
+  /** What Drive access Google granted: full read + write, the old Mentat-files-only grant, or none (box unticked). */
+  drive?: 'full' | 'limited' | 'none'
+  /** Whether Google granted calendar access. */
+  calendar?: boolean
+  /** A Google sign-in client is available (built in, or your own in Settings → Advanced). */
+  canConnect?: boolean
+  /** This build ships Mentat's own Google sign-in client. */
+  builtInClient?: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
