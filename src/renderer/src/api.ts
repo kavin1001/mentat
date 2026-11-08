@@ -40,7 +40,8 @@ export const api = {
   recording: {
     start: (meetingId: string) => inv<{ offset: number }>('recording:start', meetingId),
     segment: (meetingId: string, seg: Omit<TranscriptSegment, 'id'>) => inv<void>('recording:segment', meetingId, seg),
-    stop: () => inv<void>('recording:stop'),
+    /** end=false pauses: the note stays open to resume. */
+    stop: (end = true) => inv<void>('recording:stop', end),
     status: () => inv<{ meetingId: string } | null>('recording:status')
   },
   ai: {

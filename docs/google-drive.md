@@ -66,12 +66,15 @@ People who connected before this change gave Mentat only `drive.file` access. Se
 
 ## Where notes go, and when
 
-- **Folder:** Settings → Google Drive and Calendar → **Choose folder…** picks any folder in your Drive (or makes a
+- **Folder:** Settings → Google Drive and Calendar → **Choose folder…** picks any folder in My Drive, Shared with me or a shared drive (or makes a
   new one). Without a choice, Mentat creates `Mentat` at the top of My Drive.
 - **Filing:** with "Let Claude file each note" on, Claude reads the folders already inside that folder and puts
   each note in the best fit, e.g. `Customers / Acme Corp`, creating a sub-folder only when nothing fits.
   Your filing rules take priority. This needs an Anthropic API key; without one, notes go in the top folder.
-- **When:** each note uploads as soon as its recording stops (notes Doc plus a full transcript Doc). Enhance
-  notes later updates the same Docs instead of making new ones.
+- **When:** you decide. Each note has a **Save to Drive** button in its bottom bar (notes Doc plus a full
+  transcript Doc); after the first save it becomes **Update in Drive** and rewrites the same Docs. Recording
+  has **Pause** (resume later) and **End** (the meeting is over; a detected call hanging up also ends it).
+  After End, the Save to Drive button is highlighted. Settings has an off-by-default option to upload on
+  its own when a meeting ends and after Enhance.
 - **Delete:** deleting a note in Mentat moves its two Docs to the Drive trash, where they can be restored for
   30 days. Turn this off in Settings to keep Drive copies.

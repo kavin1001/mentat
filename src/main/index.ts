@@ -140,7 +140,7 @@ function updateTray(): void {
   const items: MenuItemConstructorOptions[] = recording
     ? [
         { label: 'Recording… show notes', click: () => recording && openMeeting(recording.meetingId) },
-        { label: 'Stop recording', click: () => recording && send('recording:autoStop', recording.meetingId) }
+        { label: 'End meeting', click: () => recording && send('recording:autoStop', recording.meetingId) }
       ]
     : [{ label: 'Start notes now', click: () => openMeeting(store.createMeeting({ title: 'Quick notes' }).id, true) }]
   items.push(
@@ -288,7 +288,7 @@ function startRecording(meetingId: string): { offset: number } {
   callAppsAtRecordStart = calls.active().map((a) => a.name)
   closeCallPrompt()
   updateTray()
-  if (!m.startedAt) store.updateMeeting(meetingId, { startedAt: new Date().toISOString() })
+  if (!m.startedAt || m.endedAt) store.updateMeeting(meetingId, { startedAt: m.startedAt ?? new Date().toISOString(), endedAt: undefined })
   return { offset: m.transcript.reduce((max, s) => Math.max(max, s.end), 0) }
 }
 
@@ -303,18 +303,21 @@ function addSegment(meetingId: string, seg: Omit<TranscriptSegment, 'id'>): void
   else send('transcript:reset', meetingId, m.transcript)
 }
 
-function stopRecording(): void {
+/**
+ * Stop listening. `end` (the default) means the meeting is over: it is marked ended and, if the user turned on
+ * automatic upload, saved to Drive. A pause (`end` false) leaves the note open to resume.
+ */
+function stopRecording(end = true): void {
   if (!recording) return
   const meetingId = recording.meetingId
-  if (store.getMeeting(meetingId)) {
-    const m = store.updateMeeting(meetingId, { endedAt: new Date().toISOString() })
-    // Upload the transcript (and any notes) to Drive right away; Enhance later updates the same docs.
-    if (settings.driveUploadAfterRecording !== false && m.transcript.length)
-      void maybeSyncDrive(m).then((saved) => saved !== m && send('meeting:changed', meetingId))
-  }
   recording = null
   callAppsAtRecordStart = []
   updateTray()
+  if (!end || !store.getMeeting(meetingId)) return
+  const m = store.updateMeeting(meetingId, { endedAt: new Date().toISOString() })
+  send('meeting:changed', meetingId)
+  if (settings.driveAutoUpload && m.transcript.length)
+    void maybeSyncDrive(m).then((saved) => saved !== m && send('meeting:changed', meetingId))
 }
 
 // ---------- calendar auto-detect ----------
@@ -375,7 +378,7 @@ async function pushToDrive(m: Meeting, reclassify = false): Promise<Meeting> {
 }
 
 async function maybeSyncDrive(m: Meeting): Promise<Meeting> {
-  if (!settings.driveAutoSync || !googleStatus().connected) return m
+  if (!settings.driveAutoUpload || !googleStatus().connected) return m
   try {
     return await pushToDrive(m)
   } catch (err) {
@@ -447,7 +450,7 @@ function registerIpc(): void {
   h('templates:delete', (_e, id: string) => store.deleteTemplate(id))
 
   h('recording:start', (_e, meetingId: string) => startRecording(meetingId))
-  h('recording:stop', () => stopRecording())
+  h('recording:stop', (_e, end?: boolean) => stopRecording(end !== false))
   h('recording:status', () => (recording ? { meetingId: recording.meetingId } : null))
   h('recording:segment', (_e, meetingId: string, seg: Omit<TranscriptSegment, 'id'>) => addSegment(meetingId, seg))
 

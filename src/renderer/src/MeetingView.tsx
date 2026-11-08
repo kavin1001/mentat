@@ -35,6 +35,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
   const [menu, setMenu] = useState(false)
   const [email, setEmail] = useState<string | null>(null)
   const [ws, setWs] = useState<WorkspacesStatus['workspaces']>([])
+  const [driveReady, setDriveReady] = useState(false)
+  const [savingDrive, setSavingDrive] = useState(false)
   const capture = useRef<CaptureHandle | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
@@ -47,6 +49,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
       setTemplates(ts)
       const s = await api.settings.get()
       setTemplateId(meeting?.enhanced?.templateId ?? s.defaultTemplateId)
+      api.google.status().then((g) => setDriveReady(g.connected)).catch(() => undefined)
       wsApi.status().then((w) => setWs(w.workspaces.filter((x) => x.role !== 'viewer' && !x.pending))).catch(() => undefined)
       const status = await api.recording.status()
       if (status?.meetingId === id) setRecording(true)
@@ -58,14 +61,14 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
         setM((prev) => (prev ? { ...prev, transcript: [...prev.transcript, seg].sort((a, b) => a.start - b.start) } : prev))
         setPartial((p) => ({ ...p, [seg.speaker]: '' }))
       }),
-      // Uploaded to Drive in the background (e.g. right after recording): show the Drive link and folder.
+      // Ended or uploaded to Drive in the background (e.g. a call hung up): refresh those fields.
       api.events.onMeetingChanged((mid) => {
         if (mid !== id) return
-        void api.meetings.get(id).then((fresh) => fresh && setM((prev) => (prev ? { ...prev, drive: fresh.drive, folderIds: fresh.folderIds } : prev)))
+        void api.meetings.get(id).then((fresh) => fresh && setM((prev) => (prev ? { ...prev, drive: fresh.drive, folderIds: fresh.folderIds, endedAt: fresh.endedAt } : prev)))
       }),
       api.events.onReset((mid, transcript) => mid === id && setM((prev) => (prev ? { ...prev, transcript } : prev))),
       // The call this meeting was recording has ended (or Stop was picked in the menu bar).
-      api.events.onAutoStop((mid) => mid === id && void stopRef.current()),
+      api.events.onAutoStop((mid) => mid === id && void stopRef.current(true)),
       onTranscriber((msg) => {
         if (msg.type === 'speaking') {
           setSpeaking((p) => ({ ...p, [msg.speaker]: msg.active }))
@@ -127,7 +130,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
     }
   }
 
-  const stop = async () => {
+  /** Stop listening. end=false is a pause: the meeting stays open to resume. */
+  const stop = async (end = true) => {
     capture.current?.stop()
     capture.current = null
     setRecording(false)
@@ -137,7 +141,21 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
     setModelStatus(null)
     setSpeaking({ me: false, them: false })
     setPartial({ me: '', them: '' })
-    await api.recording.stop()
+    await api.recording.stop(end)
+    if (end) setM((prev) => (prev ? { ...prev, endedAt: new Date().toISOString() } : prev))
+  }
+
+  const saveToDrive = async () => {
+    setSavingDrive(true)
+    try {
+      if (recording) await stop(false) // upload what's been said so far; Resume carries on
+      setM(await api.drive.sync(id))
+      onChanged()
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setSavingDrive(false)
+    }
   }
 
   const stopRef = useRef(stop)
@@ -340,10 +358,28 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
         )}
 
         <div className="dock">
-          <button className={`rec ${recording ? 'on' : ''}`} disabled={!!modelStatus} onClick={recording ? stop : start} title={recording ? 'Stop recording' : 'Start recording'}>
-            <span className="rec-dot" />
-            {recording ? 'Stop' : m.transcript.length ? 'Resume' : 'Record'}
-          </button>
+          {recording ? (
+            <>
+              <button className="rec on" disabled={!!modelStatus} onClick={() => void stop(false)} title="Pause listening; resume any time">
+                ❚❚ Pause
+              </button>
+              <button className="btn ghost" disabled={!!modelStatus} onClick={() => void stop(true)} title="End meeting: the call is over, finish the transcript">
+                ■ End
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="rec" disabled={!!modelStatus} onClick={start} title="Start listening">
+                <span className="rec-dot" />
+                {!m.transcript.length ? 'Record' : m.endedAt ? 'Record more' : 'Resume'}
+              </button>
+              {m.transcript.length > 0 && !m.endedAt && (
+                <button className="btn ghost" disabled={!!modelStatus} onClick={() => void stop(true)} title="Mark this meeting as finished">
+                  ■ End meeting
+                </button>
+              )}
+            </>
+          )}
           {recording && (
             <div className="levels" title="Me / Them">
               <span style={{ transform: `scaleY(${0.15 + levels[0] * 3})` }} />
@@ -366,6 +402,16 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
               </option>
             ))}
           </select>
+          {driveReady && (
+            <button
+              className={`btn ${m.endedAt && !m.drive ? 'attention' : ''}`}
+              onClick={saveToDrive}
+              disabled={savingDrive || (!m.transcript.length && !m.notes.trim())}
+              title={m.drive ? 'Upload the latest notes and transcript to the same Google Docs' : 'Upload the notes and full transcript to your Drive folder'}
+            >
+              {savingDrive ? 'Saving…' : m.drive ? '↻ Update in Drive' : '⇪ Save to Drive'}
+            </button>
+          )}
           <button className="btn primary" onClick={enhance} disabled={enhancing || (!m.transcript.length && !m.notes.trim() && !recording)}>
             {enhancing ? 'Enhancing…' : m.enhanced ? 'Regenerate' : '✦ Enhance notes'}
           </button>
