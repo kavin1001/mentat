@@ -59,15 +59,26 @@ export function pushAudio(pcm: ArrayBuffer): void {
 }
 
 /** Flush the last utterances and wait until they are transcribed. */
-export function endTranscription(): Promise<void> {
+/** Flush the last words. Never waits more than 10s, so a stuck worker can't leave Record greyed out. */
+export function endTranscription(timeoutMs = 10_000): Promise<void> {
   return new Promise((resolve) => {
+    let finished = false
+    const finish = () => {
+      if (finished) return
+      finished = true
+      off()
+      clearTimeout(timer)
+      meetingId = null
+      resolve()
+    }
     const off = onTranscriber((m) => {
-      if (m.type === 'drained') {
-        off()
-        meetingId = null
-        resolve()
-      }
+      if (m.type === 'drained') finish()
     })
-    send({ type: 'stop' })
+    const timer = setTimeout(finish, timeoutMs)
+    try {
+      send({ type: 'stop' })
+    } catch {
+      finish()
+    }
   })
 }
