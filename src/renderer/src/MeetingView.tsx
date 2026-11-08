@@ -6,6 +6,7 @@ import { wsApi, type WorkspacesStatus } from './wsApi'
 import { startCapture, type CaptureHandle } from './audio'
 import { ChatPanel } from './ChatPanel'
 import { NoteEditor } from './NoteEditor'
+import { confirmDialog } from './Dialogs'
 import { beginTranscription, endTranscription, ensureModel, onTranscriber } from './transcriber'
 
 interface Props {
@@ -75,6 +76,19 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
+
+  // Close the ⋯ menu on any click outside it, or Escape.
+  useEffect(() => {
+    if (!menu) return
+    const close = (e: MouseEvent) => !(e.target as HTMLElement).closest('.menu-wrap') && setMenu(false)
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setMenu(false)
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
 
   // Stop capture if the user navigates away mid-recording.
   useEffect(() => () => capture.current?.stop(), [])
@@ -204,7 +218,10 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
                   <button
                     onClick={() =>
                       act(async () => {
-                        const emails = confirm('Also email a view link to the attendees?') ? m.attendees.map((a) => a.email) : []
+                        const emails =
+                          m.attendees.length && (await confirmDialog('Also email a view link to the attendees?', { detail: m.attendees.map((a) => a.email).join(', '), confirmLabel: 'Email them', cancelLabel: 'Just copy the link' }))
+                            ? m.attendees.map((a) => a.email)
+                            : []
                         const updated = await api.drive.share(id, emails)
                         setM(updated)
                         await navigator.clipboard.writeText(updated.drive!.webViewLink)
@@ -245,8 +262,16 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
                     className="danger"
                     onClick={() =>
                       act(async () => {
-                        if (!confirm('Delete this note and its transcript?')) return
-                        if (recording) await stop()
+                        const ok = await confirmDialog(`Delete “${m.title}”?`, {
+                          detail: 'Its notes and full transcript are removed from this computer (and from your other devices if sync is on). Copies already saved to Google Drive stay in Drive.',
+                          confirmLabel: 'Delete',
+                          danger: true
+                        })
+                        if (!ok) return
+                        // Don't let a pending autosave write the note back after it is gone.
+                        clearTimeout(saveTimer.current)
+                        // Finishing the transcript can take a while (or stall); never let it block the delete.
+                        if (recording) await Promise.race([stop(), new Promise((r) => setTimeout(r, 3000))])
                         await api.meetings.remove(id)
                         onDeleted()
                       })

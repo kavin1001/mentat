@@ -38,8 +38,9 @@ Then, in **Settings**:
 
 1. Paste an [Anthropic API key](https://console.anthropic.com) (used for notes and chat, never for transcription).
 2. Pick a speech model. It downloads once, then works offline.
-3. Optional: connect Google. Create a *Desktop app* OAuth client in Google Cloud Console with the Calendar and
-   Drive APIs turned on, and paste its ID and secret.
+3. Optional: click **Connect Google Drive**. Mentat can then save notes to Drive, read your Drive files when you
+   ask Claude something, and see your calendar. The button needs Mentat's Google sign-in client built in; for
+   your own builds, see [docs/google-drive.md](docs/google-drive.md).
 
 On a Mac, allow **Microphone** and **Screen & System Audio Recording** the first time you record. Mentat needs
 the second one to hear the other people on the call; it never records your screen.

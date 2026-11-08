@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { CalendarEvent, ChatMessage, EnhancedNotes, Meeting, Settings, Template } from '../shared/types'
 import { enhancedToMarkdown, transcriptToText } from '../shared/format'
 import type { Store } from '../shared/store'
+import { hasFullDrive, readDriveFile, searchDrive } from './google'
 
 // Server-side refusal fallback: on a policy decline the API re-runs the request on a fallback model.
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
@@ -152,8 +153,32 @@ const CHAT_TOOLS: Anthropic.Beta.BetaTool[] = [
   }
 ]
 
-function runChatTool(store: Store, name: string, input: Record<string, unknown>): string {
+// Offered only when Google Drive is connected with read access.
+const DRIVE_TOOLS: Anthropic.Beta.BetaTool[] = [
+  {
+    name: 'search_drive',
+    description: "Full-text search over the user's Google Drive (file names and contents). Returns file ids, names, types, modified dates and links.",
+    input_schema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'Words or a phrase to find.' } },
+      required: ['query']
+    }
+  },
+  {
+    name: 'read_drive_file',
+    description: 'Read the text of one Google Drive file by id: Google Docs and Slides as text, Sheets as CSV, plain text files as-is.',
+    input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] }
+  }
+]
+
+async function runChatTool(settings: Settings, store: Store, name: string, input: Record<string, unknown>): Promise<string> {
   switch (name) {
+    case 'search_drive':
+      return JSON.stringify(await searchDrive(settings, String(input.query ?? ''), 10))
+    case 'read_drive_file': {
+      const { file, text } = await readDriveFile(settings, String(input.id))
+      return `${file.name} (${file.webViewLink ?? file.id}, modified ${file.modifiedTime ?? 'unknown'})\n\n${text}`
+    }
     case 'search_meetings':
       return JSON.stringify(store.search(String(input.query ?? ''), 8))
     case 'list_recent_meetings':
@@ -183,13 +208,16 @@ export async function chat(
   const c = client(settings)
   const meeting = scope.meetingId ? store.getMeeting(scope.meetingId) : null
   const today = new Date().toDateString()
+  const drive = hasFullDrive()
+  const tools = [...(meeting ? [] : CHAT_TOOLS), ...(drive ? DRIVE_TOOLS : [])]
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     {
       type: 'text',
       text:
         'You are Mentat, an assistant that answers questions about the user\'s meetings. ' +
         '"Me" in transcripts is the user. Answer directly and concisely, quote the transcript when it helps, ' +
-        'and say so when the meetings do not contain the answer. Use Markdown.'
+        'and say so when the meetings do not contain the answer. Use Markdown.' +
+        (drive ? " You can also search and read the user's Google Drive; link any Drive file you use." : '')
     }
   ]
   if (meeting) system.push({ type: 'text', text: meetingContext(meeting), cache_control: { type: 'ephemeral' } })
@@ -208,7 +236,7 @@ export async function chat(
       fallbacks: 'default',
       output_config: { effort: 'low' },
       system,
-      tools: meeting ? undefined : CHAT_TOOLS,
+      tools: tools.length ? tools : undefined,
       messages
     })
     stream.on('text', (t) => {
@@ -223,7 +251,7 @@ export async function chat(
     for (const block of msg.content) {
       if (block.type !== 'tool_use') continue
       try {
-        results.push({ type: 'tool_result', tool_use_id: block.id, content: runChatTool(store, block.name, block.input as Record<string, unknown>) })
+        results.push({ type: 'tool_result', tool_use_id: block.id, content: await runChatTool(settings, store, block.name, block.input as Record<string, unknown>) })
       } catch (err) {
         results.push({ type: 'tool_result', tool_use_id: block.id, content: String(err), is_error: true })
       }

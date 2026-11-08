@@ -1,4 +1,5 @@
 // Settings → "Phone and sync". Everything here is optional: Mentat is local-only until the user
+import { confirmDialog } from './Dialogs'
 // pairs a phone on their network (no password) or turns on cloud features with a password profile.
 import { useEffect, useState } from 'react'
 import { syncApi, type SyncStatus } from './syncApi'
@@ -144,7 +145,7 @@ export function SyncSettings({ onError }: { onError: (m: string) => void }) {
               <button
                 className="link danger"
                 disabled={busy}
-                onClick={() => confirm('Delete your cloud profile and everything synced to the server? Notes on this computer stay.') && run(() => syncApi.deleteProfile())}
+                onClick={() => void confirmDialog('Delete your cloud profile and everything synced to the server?', { detail: 'Notes on this computer stay.', danger: true, confirmLabel: 'Delete profile' }).then((ok) => { if (ok) void run(() => syncApi.deleteProfile()) })}
               >
                 Delete cloud profile
               </button>

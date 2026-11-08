@@ -9,6 +9,7 @@ import { ChatPanel } from './ChatPanel'
 import { SettingsView } from './SettingsView'
 import { TemplatesView } from './TemplatesView'
 import { Markdown } from './Markdown'
+import { ContextMenu, DialogHost, confirmDialog, type MenuItem } from './Dialogs'
 
 type View =
   | { kind: 'meeting'; id: string; autoRecord?: boolean }
@@ -41,6 +42,9 @@ export function App() {
   const [brief, setBrief] = useState<{ ev: CalendarEvent; text: string | null } | null>(null)
   // Electron does not implement window.prompt(), so new folders are named inline.
   const [newFolder, setNewFolder] = useState<string | null>(null)
+  // Right-click (or ⋯) menu on a note or folder in the sidebar, and inline renaming.
+  const [ctx, setCtx] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const [renaming, setRenaming] = useState<{ kind: 'meeting' | 'folder'; id: string; value: string } | null>(null)
 
   const refresh = useCallback(async () => {
     const ws = await wsApi.local()
@@ -69,6 +73,12 @@ export function App() {
     ]
     return () => offs.forEach((o) => o())
   }, [refresh])
+
+  // Nudge toward Google Drive on the home screen until it is connected.
+  const [googleConnected, setGoogleConnected] = useState(true)
+  useEffect(() => {
+    if (view.kind === 'home') api.google.status().then((g) => setGoogleConnected(g.connected)).catch(() => undefined)
+  }, [view.kind])
 
   useEffect(() => {
     if (!toast) return
@@ -106,6 +116,91 @@ export function App() {
       void refresh()
     }
   }
+
+  const deleteMeeting = async (m: { id: string; title: string }) => {
+    const ok = await confirmDialog(`Delete “${m.title}”?`, {
+      detail: 'Its notes and full transcript are removed from this computer (and from your other devices if sync is on). Copies already saved to Google Drive stay in Drive.',
+      confirmLabel: 'Delete',
+      danger: true
+    })
+    if (!ok) return
+    try {
+      await api.meetings.remove(m.id)
+      if ((view.kind === 'meeting' || view.kind === 'shared') && view.id === m.id) setView({ kind: 'home' })
+      await refresh()
+    } catch (e) {
+      setToast((e as Error).message)
+    }
+  }
+
+  const deleteFolder = async (f: Folder) => {
+    const ok = await confirmDialog(`Delete the folder “${f.name}”?`, {
+      detail: 'The notes inside are kept and move back to All notes.',
+      confirmLabel: 'Delete folder',
+      danger: true
+    })
+    if (!ok) return
+    await api.folders.remove(f.id)
+    if (folderId === f.id) setFolderId(undefined)
+    await refresh()
+  }
+
+  const saveRename = async () => {
+    const r = renaming
+    setRenaming(null)
+    const name = r?.value.trim()
+    if (!r || !name) return
+    try {
+      if (r.kind === 'folder') await api.folders.rename(r.id, name)
+      else await api.meetings.update(r.id, { title: name })
+      await refresh()
+    } catch (e) {
+      setToast((e as Error).message)
+    }
+  }
+
+  const openMenu = (e: React.MouseEvent, items: MenuItem[]) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setCtx({ x: e.clientX, y: e.clientY, items })
+  }
+
+  const meetingMenu = (m: MeetingSummary): MenuItem[] =>
+    workspaceId
+      ? [{ label: 'Open', onClick: () => setView({ kind: 'shared', workspaceId, id: m.id }) }]
+      : [
+          { label: 'Open', onClick: () => setView({ kind: 'meeting', id: m.id }) },
+          { label: 'Rename', onClick: () => setRenaming({ kind: 'meeting', id: m.id, value: m.title }) },
+          { separator: true, label: '' },
+          { label: 'Move to: No folder', disabled: !m.folderIds.length, onClick: () => void api.meetings.update(m.id, { folderIds: [] }).then(refresh) },
+          ...folders.map((f) => ({
+            label: `Move to: ${f.name}`,
+            disabled: m.folderIds[0] === f.id,
+            onClick: () => void api.meetings.update(m.id, { folderIds: [f.id] }).then(refresh)
+          })),
+          { separator: true, label: '' },
+          { label: 'Delete note', danger: true, onClick: () => void deleteMeeting(m) }
+        ]
+
+  const folderMenu = (f: Folder): MenuItem[] => [
+    { label: 'Rename', onClick: () => setRenaming({ kind: 'folder', id: f.id, value: f.name }) },
+    { label: 'Delete folder', danger: true, onClick: () => void deleteFolder(f) }
+  ]
+
+  const renameInput = (
+    <input
+      className="rename-input"
+      autoFocus
+      value={renaming?.value ?? ''}
+      onChange={(e) => setRenaming((r) => (r ? { ...r, value: e.target.value } : r))}
+      onFocus={(e) => e.target.select()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') void saveRename()
+        if (e.key === 'Escape') setRenaming(null)
+      }}
+      onBlur={() => void saveRename()}
+    />
+  )
 
   const upcoming = events.filter((e) => new Date(e.end).getTime() > Date.now()).slice(0, 4)
   const groups: [string, MeetingSummary[]][] = []
@@ -165,12 +260,21 @@ export function App() {
           <button className={`nav ${!folderId && !workspaceId ? 'active' : ''}`} onClick={() => { setFolderId(undefined); setWorkspaceId(undefined) }}>
             All notes
           </button>
-          {folders.map((f) => (
-            <button key={f.id} className={`nav ${folderId === f.id && !workspaceId ? 'active' : ''}`} onClick={() => { setFolderId(f.id); setWorkspaceId(undefined) }}>
-              ▸ {f.name}
-              {f.workspaceIds?.length ? <span className="muted small"> · shared</span> : null}
-            </button>
-          ))}
+          {folders.map((f) =>
+            renaming?.kind === 'folder' && renaming.id === f.id ? (
+              <div key={f.id}>{renameInput}</div>
+            ) : (
+              <div key={f.id} className="sidebar-row" onContextMenu={(e) => openMenu(e, folderMenu(f))}>
+                <button className={`nav ${folderId === f.id && !workspaceId ? 'active' : ''}`} onClick={() => { setFolderId(f.id); setWorkspaceId(undefined) }}>
+                  ▸ {f.name}
+                  {f.workspaceIds?.length ? <span className="muted small"> · shared</span> : null}
+                </button>
+                <button className="row-more" title="Rename or delete folder" onClick={(e) => openMenu(e, folderMenu(f))}>
+                  ⋯
+                </button>
+              </div>
+            )
+          )}
         </section>
 
         {workspaces.length > 0 && (
@@ -188,9 +292,12 @@ export function App() {
           {groups.map(([label, ms]) => (
             <div key={label}>
               <h4>{label}</h4>
-              {ms.map((m) => (
+              {ms.map((m) =>
+                renaming?.kind === 'meeting' && renaming.id === m.id ? (
+                  <div key={m.id}>{renameInput}</div>
+                ) : (
+                <div key={m.id} className="sidebar-row" onContextMenu={(e) => openMenu(e, meetingMenu(m))}>
                 <button
-                  key={m.id}
                   className={`meeting-item ${(view.kind === 'meeting' || view.kind === 'shared') && view.id === m.id ? 'active' : ''}`}
                   onClick={() => setView(workspaceId ? { kind: 'shared', workspaceId, id: m.id } : { kind: 'meeting', id: m.id })}
                 >
@@ -202,7 +309,14 @@ export function App() {
                     {m.hasEnhanced ? ' · notes' : ''}
                   </span>
                 </button>
-              ))}
+                {!workspaceId && (
+                  <button className="row-more" title="Rename, move or delete" onClick={(e) => openMenu(e, meetingMenu(m))}>
+                    ⋯
+                  </button>
+                )}
+                </div>
+                )
+              )}
             </div>
           ))}
           {!meetings.length && (
@@ -253,6 +367,18 @@ export function App() {
             <button className="btn primary" onClick={newMeeting}>
               Start a note
             </button>
+            {!googleConnected && (
+              <div className="card home-card">
+                <h3>Save your notes to Google Drive</h3>
+                <p className="muted small">
+                  One click connects your Google account. Mentat then files every note and transcript in Drive, Claude can look things up in your Drive
+                  files, and upcoming meetings show up here.
+                </p>
+                <button className="btn" onClick={() => setView({ kind: 'settings' })}>
+                  Connect Google Drive
+                </button>
+              </div>
+            )}
           </div>
         )}
         {view.kind === 'chat' && (
@@ -281,6 +407,8 @@ export function App() {
           </div>
         </div>
       )}
+      {ctx && <ContextMenu {...ctx} onClose={() => setCtx(null)} />}
+      <DialogHost />
       {toast && (
         <div className="toast" onClick={() => setToast(null)}>
           {/* Drop Electron's IPC wrapper so the user sees only the actual message. */}

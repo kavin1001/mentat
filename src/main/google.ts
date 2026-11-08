@@ -1,6 +1,8 @@
 // Google sign-in (desktop OAuth loopback + PKCE), Calendar and Drive.
-// Scopes are deliberately narrow: calendar.readonly and drive.file (only files Mentat creates).
-import { createServer } from 'node:http'
+// Mentat ships its own Google OAuth client (injected at build time, never committed: see docs/google-drive.md),
+// so connecting is one click. Scopes: calendar.readonly, and full Drive so Mentat can read your files for
+// Claude and file notes into folders you already have.
+import { createServer, type Server } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -8,18 +10,34 @@ import { app, safeStorage, shell } from 'electron'
 import type { Attendee, CalendarEvent, GoogleStatus, Meeting, Settings } from '../shared/types'
 import { markdownToHtml, meetingToMarkdown, transcriptToText } from '../shared/format'
 
-const SCOPES = [
-  'openid',
-  'email',
-  'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/drive.file'
-]
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive'
+const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
+const SCOPES = ['openid', 'email', CALENDAR_SCOPE, DRIVE_SCOPE]
+// Earlier builds asked only for files Mentat itself created.
+const LEGACY_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
+
+/** The client built into this copy of Mentat (MAIN_VITE_* at build time, or MENTAT_* when running). */
+function builtInClient(): { id: string; secret: string } | null {
+  const id = process.env.MENTAT_GOOGLE_CLIENT_ID || import.meta.env.MAIN_VITE_GOOGLE_CLIENT_ID || ''
+  const secret = process.env.MENTAT_GOOGLE_CLIENT_SECRET || import.meta.env.MAIN_VITE_GOOGLE_CLIENT_SECRET || ''
+  return id ? { id, secret } : null
+}
+
+/** Your own client from Settings → Advanced wins; otherwise the built-in one. */
+function oauthClient(settings: Settings): { id: string; secret: string } | null {
+  if (settings.googleClientId) return { id: settings.googleClientId, secret: settings.googleClientSecret }
+  return builtInClient()
+}
 
 interface Tokens {
   access_token: string
   refresh_token?: string
   expires_at: number
   email?: string
+  /** Space-separated scopes Google actually granted (people can untick boxes on the consent screen). */
+  scope?: string
+  /** The OAuth client these tokens belong to; refreshing must use the same one. */
+  client_id?: string
 }
 
 const tokenPath = () => join(app.getPath('userData'), 'google-tokens.bin')
@@ -39,55 +57,96 @@ function loadTokens(): Tokens | null {
   }
 }
 
-export function googleStatus(): GoogleStatus {
+export function googleStatus(settings?: Settings): GoogleStatus {
   const t = loadTokens()
-  return { connected: !!t?.refresh_token, email: t?.email }
+  const scopes = (t?.scope ?? LEGACY_DRIVE_SCOPE + ' ' + CALENDAR_SCOPE).split(' ')
+  const drive = scopes.includes(DRIVE_SCOPE) ? 'full' : scopes.includes(LEGACY_DRIVE_SCOPE) ? 'limited' : 'none'
+  return {
+    connected: !!t?.refresh_token,
+    email: t?.email,
+    drive: t?.refresh_token ? drive : undefined,
+    calendar: t?.refresh_token ? scopes.includes(CALENDAR_SCOPE) : undefined,
+    canConnect: settings ? !!oauthClient(settings) : !!builtInClient(),
+    builtInClient: !!builtInClient()
+  }
+}
+
+/** Full Drive access (read + write), as opposed to a legacy file-only grant. */
+export function hasFullDrive(): boolean {
+  return googleStatus().drive === 'full'
 }
 
 export function googleDisconnect(): void {
+  const t = loadTokens()
+  // Revoke on Google's side too, so Mentat disappears from the account's third-party access list.
+  if (t?.refresh_token) void fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(t.refresh_token)}`, { method: 'POST' }).catch(() => undefined)
   if (existsSync(tokenPath())) unlinkSync(tokenPath())
 }
 
 const b64url = (b: Buffer) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 
+let pending: { server: Server; reject: (e: Error) => void } | null = null
+
+/** Stop waiting for a sign-in the user abandoned in the browser. */
+export function googleCancel(): void {
+  pending?.server.close()
+  pending?.reject(new Error('Google sign-in cancelled'))
+  pending = null
+}
+
+const page = (title: string, body: string) =>
+  `<!doctype html><html><head><meta charset="utf-8"><title>Mentat</title></head><body style="font-family:-apple-system,system-ui,sans-serif;background:#f7f6f3;color:#23231f;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="background:#fff;border-radius:14px;padding:32px 40px;box-shadow:0 10px 30px rgba(0,0,0,.08);max-width:440px"><h2 style="margin:0 0 8px">${title}</h2><p style="margin:0;color:#6b675e;line-height:1.5">${body}</p></div></body></html>`
+
 export async function googleConnect(settings: Settings): Promise<GoogleStatus> {
-  if (!settings.googleClientId) throw new Error('Add a Google OAuth client ID (Desktop app type) in Settings first.')
+  const client = oauthClient(settings)
+  if (!client)
+    throw new Error('This copy of Mentat was built without a Google sign-in client. Add one under Settings → Google → Advanced, or see docs/google-drive.md.')
+  googleCancel()
   const verifier = b64url(randomBytes(32))
   const challenge = b64url(createHash('sha256').update(verifier).digest())
   const state = b64url(randomBytes(16))
 
   const { code, redirectUri } = await new Promise<{ code: string; redirectUri: string }>((resolve, reject) => {
+    let redirectUri = ''
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       if (url.pathname !== '/callback') return res.end()
       const ok = url.searchParams.get('state') === state && url.searchParams.get('code')
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(`<html><body style="font-family:system-ui;padding:40px">${ok ? 'Mentat is connected to Google. You can close this tab.' : 'Sign-in failed. Please try again.'}</body></html>`)
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.end(
+        ok
+          ? page('Mentat is connected', 'You can close this tab and go back to Mentat.')
+          : page('Google sign-in did not finish', 'Go back to Mentat and click Connect Google Drive to try again.')
+      )
       server.close()
+      clearTimeout(timer)
+      pending = null
       if (ok) resolve({ code: url.searchParams.get('code')!, redirectUri })
-      else reject(new Error(url.searchParams.get('error') ?? 'Google sign-in failed'))
+      else reject(new Error(url.searchParams.get('error') === 'access_denied' ? 'Google sign-in was cancelled.' : (url.searchParams.get('error') ?? 'Google sign-in failed')))
     })
-    let redirectUri = ''
+    pending = { server, reject }
     server.listen(0, '127.0.0.1', () => {
       const port = (server.address() as { port: number }).port
       redirectUri = `http://127.0.0.1:${port}/callback`
       const auth = new URL('https://accounts.google.com/o/oauth2/v2/auth')
       auth.search = new URLSearchParams({
-        client_id: settings.googleClientId,
+        client_id: client.id,
         redirect_uri: redirectUri,
         response_type: 'code',
         scope: SCOPES.join(' '),
         code_challenge: challenge,
         code_challenge_method: 'S256',
         access_type: 'offline',
+        include_granted_scopes: 'true',
         prompt: 'consent',
         state
       }).toString()
       void shell.openExternal(auth.toString())
     })
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       server.close()
-      reject(new Error('Google sign-in timed out'))
+      pending = null
+      reject(new Error('Google sign-in timed out. Click Connect Google Drive to try again.'))
     }, 5 * 60_000)
   })
 
@@ -96,14 +155,14 @@ export async function googleConnect(settings: Settings): Promise<GoogleStatus> {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       code,
-      client_id: settings.googleClientId,
-      client_secret: settings.googleClientSecret,
+      client_id: client.id,
+      ...(client.secret ? { client_secret: client.secret } : {}),
       redirect_uri: redirectUri,
       grant_type: 'authorization_code',
       code_verifier: verifier
     })
   })
-  const body = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string; error_description?: string }
+  const body = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string; scope?: string; error_description?: string }
   if (!res.ok) throw new Error(body.error_description ?? 'Token exchange failed')
   let email: string | undefined
   if (body.id_token) {
@@ -113,26 +172,45 @@ export async function googleConnect(settings: Settings): Promise<GoogleStatus> {
       /* ignore */
     }
   }
-  saveTokens({ access_token: body.access_token, refresh_token: body.refresh_token, expires_at: Date.now() + body.expires_in * 1000, email })
-  return googleStatus()
+  saveTokens({
+    access_token: body.access_token,
+    refresh_token: body.refresh_token,
+    expires_at: Date.now() + body.expires_in * 1000,
+    email,
+    scope: body.scope,
+    client_id: client.id
+  })
+  folderCache.clear()
+  return googleStatus(settings)
 }
 
 async function accessToken(settings: Settings): Promise<string> {
   const t = loadTokens()
-  if (!t?.refresh_token) throw new Error('Connect Google in Settings first.')
+  if (!t?.refresh_token) throw new Error('Connect Google Drive in Settings first.')
   if (t.expires_at - 60_000 > Date.now()) return t.access_token
+  // Tokens from before the built-in client have no client_id: they came from the client in Settings.
+  const builtIn = builtInClient()
+  const client =
+    t.client_id && builtIn?.id === t.client_id
+      ? builtIn
+      : { id: t.client_id ?? settings.googleClientId, secret: t.client_id && t.client_id !== settings.googleClientId ? '' : settings.googleClientSecret }
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: settings.googleClientId,
-      client_secret: settings.googleClientSecret,
+      client_id: client.id,
+      ...(client.secret ? { client_secret: client.secret } : {}),
       refresh_token: t.refresh_token,
       grant_type: 'refresh_token'
     })
   })
-  const body = (await res.json()) as { access_token: string; expires_in: number; error_description?: string }
-  if (!res.ok) throw new Error(body.error_description ?? 'Google token refresh failed; reconnect Google in Settings.')
+  const body = (await res.json()) as { access_token: string; expires_in: number; error?: string; error_description?: string }
+  if (!res.ok)
+    throw new Error(
+      body.error === 'invalid_grant'
+        ? 'Google sign-in expired. Open Settings and click Connect Google Drive again.'
+        : (body.error_description ?? 'Google token refresh failed; reconnect Google in Settings.')
+    )
   saveTokens({ ...t, access_token: body.access_token, expires_at: Date.now() + body.expires_in * 1000 })
   return body.access_token
 }
@@ -184,9 +262,9 @@ export async function upcomingEvents(settings: Settings, days = 7): Promise<Cale
 }
 
 // ---------- Drive ----------
-// Mentat files every note under one root folder ("Mentat" by default) and, when auto-classify is on,
-// into a sub-folder Claude picks, e.g. Mentat/Customers/Acme. With the drive.file scope Mentat only
-// sees folders it created, so the folder tree below is the one Mentat built.
+// Mentat files every note under one root folder ("Mentat" by default, at the top of My Drive) and, when
+// auto-classify is on, into a sub-folder Claude picks, e.g. Mentat/Customers/Acme. Folders you make there
+// yourself in Drive count too.
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
 const folderCache = new Map<string, string>() // "root/a/b" -> folder id
@@ -194,7 +272,8 @@ const folderCache = new Map<string, string>() // "root/a/b" -> folder id
 const q = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 
 async function findOrCreateFolder(settings: Settings, name: string, parent?: string): Promise<string> {
-  const query = `mimeType='${FOLDER_MIME}' and name='${q(name)}' and trashed=false` + (parent ? ` and '${parent}' in parents` : '')
+  // With full Drive access, look only at the top of My Drive for the root, not every folder with that name.
+  const query = `mimeType='${FOLDER_MIME}' and name='${q(name)}' and trashed=false and '${parent ?? 'root'}' in parents`
   const found = await gfetch<{ files: { id: string }[] }>(settings, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id)`)
   if (found.files[0]) return found.files[0].id
   const created = await gfetch<{ id: string }>(settings, 'https://www.googleapis.com/drive/v3/files?fields=id', {
@@ -225,29 +304,72 @@ async function ensureFolderPath(settings: Settings, path: string[] = []): Promis
 /** Every sub-folder path under the Mentat root, e.g. [["Customers"], ["Customers", "Acme"], ["Hiring"]]. */
 export async function driveFolderTree(settings: Settings): Promise<string[][]> {
   const rootId = await ensureFolderPath(settings)
-  const all: { id: string; name: string; parents?: string[] }[] = []
-  let pageToken = ''
-  do {
-    const query = `mimeType='${FOLDER_MIME}' and trashed=false`
-    const page = await gfetch<{ files: typeof all; nextPageToken?: string }>(
-      settings,
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,parents)&pageSize=1000${pageToken ? `&pageToken=${pageToken}` : ''}`
-    )
-    all.push(...page.files)
-    pageToken = page.nextPageToken ?? ''
-  } while (pageToken)
-  const children = new Map<string, typeof all>()
-  for (const f of all) for (const p of f.parents ?? []) children.set(p, [...(children.get(p) ?? []), f])
   const out: string[][] = []
-  const walk = (id: string, path: string[], depth: number) => {
-    if (depth > 4) return
-    for (const c of children.get(id) ?? []) {
-      out.push([...path, c.name])
-      walk(c.id, [...path, c.name], depth + 1)
+  // Walk down from the root one level at a time (full Drive access can see thousands of unrelated folders).
+  let level: { id: string; path: string[] }[] = [{ id: rootId, path: [] }]
+  for (let depth = 0; depth < 5 && level.length && out.length < 500; depth++) {
+    const next: typeof level = []
+    for (let i = 0; i < level.length; i += 20) {
+      const batch = level.slice(i, i + 20)
+      const query = `mimeType='${FOLDER_MIME}' and trashed=false and (${batch.map((f) => `'${f.id}' in parents`).join(' or ')})`
+      let pageToken = ''
+      do {
+        const page = await gfetch<{ files: { id: string; name: string; parents?: string[] }[]; nextPageToken?: string }>(
+          settings,
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,parents)&pageSize=1000${pageToken ? `&pageToken=${pageToken}` : ''}`
+        )
+        for (const f of page.files) {
+          const parent = batch.find((p) => f.parents?.includes(p.id))
+          if (!parent) continue
+          const path = [...parent.path, f.name]
+          out.push(path)
+          next.push({ id: f.id, path })
+        }
+        pageToken = page.nextPageToken ?? ''
+      } while (pageToken)
     }
+    level = next
   }
-  walk(rootId, [], 0)
-  return out
+  return out.sort((x, y) => x.join('/').localeCompare(y.join('/')))
+}
+
+// ---------- reading Drive (for Claude) ----------
+
+export interface DriveFile {
+  id: string
+  name: string
+  mimeType: string
+  modifiedTime?: string
+  webViewLink?: string
+}
+
+/** Full-text search over the user's Drive (names and contents). */
+export async function searchDrive(settings: Settings, text: string, limit = 10): Promise<DriveFile[]> {
+  const query = `fullText contains '${q(text)}' and trashed=false and mimeType != '${FOLDER_MIME}'`
+  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&pageSize=${Math.min(limit, 25)}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=allDrives`
+  return (await gfetch<{ files: DriveFile[] }>(settings, url)).files
+}
+
+const EXPORTS: Record<string, string> = {
+  'application/vnd.google-apps.document': 'text/plain',
+  'application/vnd.google-apps.presentation': 'text/plain',
+  'application/vnd.google-apps.spreadsheet': 'text/csv'
+}
+
+/** A Drive file's text: Google Docs/Slides as plain text, Sheets as CSV (first sheet), text files as-is. */
+export async function readDriveFile(settings: Settings, id: string, maxChars = 60_000): Promise<{ file: DriveFile; text: string }> {
+  const file = await gfetch<DriveFile>(settings, `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,name,mimeType,modifiedTime,webViewLink&supportsAllDrives=true`)
+  const token = await accessToken(settings)
+  const exportAs = EXPORTS[file.mimeType]
+  const readable = exportAs || /^text\/|json|xml|markdown|csv/.test(file.mimeType)
+  if (!readable) return { file, text: `(Mentat can't read ${file.mimeType} files yet; only Google Docs, Sheets, Slides and text files.)` }
+  const url = exportAs
+    ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent(exportAs)}`
+    : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok) throw new Error(`Google API ${res.status}: ${await res.text()}`)
+  const text = await res.text()
+  return { file, text: text.length > maxChars ? text.slice(0, maxChars) + '\n…(truncated)' : text }
 }
 
 /** Create or update a Google Doc from HTML in the given folder, moving it there if it lives elsewhere. */

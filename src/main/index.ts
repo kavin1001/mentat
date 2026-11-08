@@ -9,7 +9,7 @@ import type { CalendarEvent, ChatMessage, Meeting, Settings, Template, Transcrip
 import { loadSettings, saveSettings } from './settings'
 import { chat, classifyMeeting, enhanceNotes, followUpEmail, preMeetingBrief } from './claude'
 import { removeEcho } from '../shared/echo'
-import { driveFolderTree, googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
+import { driveFolderTree, googleCancel, googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
 import { SyncManager } from './sync/manager'
 import { initUpdater, installUpdate } from './updater'
 import { watchMic } from './micWatch'
@@ -305,7 +305,7 @@ function addSegment(meetingId: string, seg: Omit<TranscriptSegment, 'id'>): void
 
 function stopRecording(): void {
   if (!recording) return
-  store.updateMeeting(recording.meetingId, { endedAt: new Date().toISOString() })
+  if (store.getMeeting(recording.meetingId)) store.updateMeeting(recording.meetingId, { endedAt: new Date().toISOString() })
   recording = null
   callAppsAtRecordStart = []
   updateTray()
@@ -409,7 +409,15 @@ function registerIpc(): void {
   h('meetings:get', (_e, id: string) => store.getMeeting(id))
   h('meetings:create', (_e, partial?: Partial<Meeting>) => store.createMeeting(partial))
   h('meetings:update', (_e, id: string, patch: Partial<Meeting>) => store.updateMeeting(id, patch))
-  h('meetings:delete', (_e, id: string) => store.deleteMeeting(id))
+  h('meetings:delete', (_e, id: string) => {
+    // Deleting the note that is recording ends the recording first, so no late segment writes it back.
+    if (recording?.meetingId === id) {
+      recording = null
+      callAppsAtRecordStart = []
+      updateTray()
+    }
+    store.deleteMeeting(id)
+  })
   h('meetings:fromEvent', (_e, ev: CalendarEvent) => meetingForEvent(ev))
 
   h('folders:list', () => store.listFolders())
@@ -441,13 +449,20 @@ function registerIpc(): void {
   h('ai:followUp', async (_e, meetingId: string) => followUpEmail(settings, store.getMeeting(meetingId)!))
   h('ai:brief', async (_e, ev: CalendarEvent) => preMeetingBrief(settings, store, ev))
 
-  h('google:status', () => googleStatus())
+  h('google:status', () => googleStatus(settings))
   h('google:connect', async () => {
     const s = await googleConnect(settings)
+    showMain() // the browser had focus; bring Mentat back
     void pollCalendar()
     return s
   })
-  h('google:disconnect', () => googleDisconnect())
+  h('google:cancel', () => googleCancel())
+  h('google:disconnect', () => {
+    googleDisconnect()
+    cachedEvents = []
+    send('calendar:events', [])
+    return googleStatus(settings)
+  })
   h('calendar:events', async () => {
     if (!googleStatus().connected) return []
     cachedEvents = await upcomingEvents(settings)
