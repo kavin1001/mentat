@@ -73,6 +73,7 @@ export const api = {
     onReset: (cb: (meetingId: string, transcript: TranscriptSegment[]) => void) => window.mentat.on('transcript:reset', cb),
     onError: (cb: (msg: string) => void) => window.mentat.on('app:error', cb),
     onOpenMeeting: (cb: (id: string, opts: { autoRecord?: boolean }) => void) => window.mentat.on('meeting:open', cb),
-    onCalendar: (cb: (events: CalendarEvent[]) => void) => window.mentat.on('calendar:events', cb)
+    onCalendar: (cb: (events: CalendarEvent[]) => void) => window.mentat.on('calendar:events', cb),
+    onAutoStop: (cb: (meetingId: string) => void) => window.mentat.on('recording:autoStop', cb)
   }
 }

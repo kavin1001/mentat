@@ -11,9 +11,13 @@ module.exports = {
   directories: { output: 'dist', buildResources: 'build' },
   files: ['out/**', 'package.json'],
   asarUnpack: ['**/*.node'],
+  icon: 'build/icon.png',
+  extraResources: [{ from: 'resources/icons', to: 'icons' }],
   publish: [{ provider: 'github', owner: 'kavin1001', repo: 'mentat', releaseType: 'release' }],
   mac: {
     category: 'public.app-category.productivity',
+    // Helper that tells Mentat which apps are using the microphone (built by scripts/build-mic-monitor.mjs).
+    extraResources: [{ from: 'resources/bin/mic-monitor', to: 'mic-monitor' }],
     target: [
       { target: 'dmg', arch: ['arm64', 'x64'] },
       { target: 'zip', arch: ['arm64', 'x64'] } // the zip is what auto-update downloads

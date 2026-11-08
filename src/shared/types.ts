@@ -117,6 +117,12 @@ export interface Settings {
   driveRules: string
   defaultTemplateId: string
   autoDetectMeetings: boolean
+  /** Notice when a call app (Zoom, Meet, Teams…) starts using the mic and offer to take notes. */
+  autoDetectCalls: boolean
+  /** Stop recording when the detected call ends. */
+  autoStopRecording: boolean
+  /** Start Mentat in the background when you log in (installed builds only). */
+  openAtLogin: boolean
 }
 
 export interface CalendarEvent {
@@ -153,5 +159,8 @@ export const DEFAULT_SETTINGS: Settings = {
   driveAutoClassify: true,
   driveRules: '',
   defaultTemplateId: 'general',
-  autoDetectMeetings: true
+  autoDetectMeetings: true,
+  autoDetectCalls: true,
+  autoStopRecording: true,
+  openAtLogin: true
 }

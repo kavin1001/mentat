@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, net, Notification, protocol, session, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, screen, session, shell, systemPreferences, Tray, type MenuItemConstructorOptions } from 'electron'
 import { Store } from '../shared/store'
 import { meetingToMarkdown, transcriptToSrt, transcriptToText } from '../shared/format'
 import type { CalendarEvent, ChatMessage, Meeting, Settings, Template, TranscriptSegment } from '../shared/types'
@@ -12,11 +12,17 @@ import { removeEcho } from '../shared/echo'
 import { driveFolderTree, googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
 import { SyncManager } from './sync/manager'
 import { initUpdater, installUpdate } from './updater'
+import { watchMic } from './micWatch'
+import { CallTracker, type CallApp } from '../shared/calls'
 
 // macOS 13+: let getDisplayMedia return system audio through ScreenCaptureKit, with no virtual audio driver.
 if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride')
 }
+
+// One copy at a time: launching it again (Dock, Start menu, login item) just brings the window forward.
+if (!app.requestSingleInstanceLock()) app.quit()
+app.on('second-instance', () => showMain())
 
 // The UI is served from app://mentat/ (not file://) so the on-device speech model can fetch its WASM
 // runtime, and with cross-origin isolation so ONNX Runtime can use multiple threads.
@@ -43,6 +49,11 @@ let settings: Settings
 let sync: SyncManager | null = null
 let win: BrowserWindow | null = null
 let updater: ReturnType<typeof initUpdater> | null = null
+let tray: Tray | null = null
+let quitting = false
+const isMac = process.platform === 'darwin'
+const rendererUrl = (hash = '') =>
+  (process.env.ELECTRON_RENDERER_URL ? process.env.ELECTRON_RENDERER_URL : 'app://mentat/index.html') + hash
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -52,10 +63,21 @@ function createWindow(): void {
     minHeight: 600,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#f7f6f3',
+    show: false,
     webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false, contextIsolation: true }
   })
-  if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else void win.loadURL('app://mentat/index.html')
+  void win.loadURL(rendererUrl())
+  // Started at login: stay in the menu bar / tray until called for. The page still loads, so a detected
+  // call can start recording right away.
+  const startHidden = process.argv.includes('--hidden') || (isMac && app.getLoginItemSettings().wasOpenedAtLogin)
+  win.once('ready-to-show', () => !startHidden && win?.show())
+  // Closing the window keeps Mentat running in the background (and keeps any recording going).
+  win.on('close', (e) => {
+    if (quitting) return
+    e.preventDefault()
+    win?.hide()
+    if (isMac && !recording) app.dock?.hide()
+  })
   if (process.env.MENTAT_SMOKE_TEST) smokeTest(win)
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
@@ -88,6 +110,171 @@ function smokeTest(w: BrowserWindow): void {
 
 const send = (channel: string, ...args: unknown[]) => win?.webContents.send(channel, ...args)
 
+function showMain(): void {
+  if (!win || win.isDestroyed()) createWindow()
+  if (isMac) void app.dock?.show()
+  win?.show()
+  win?.focus()
+}
+
+function openMeeting(id: string, autoRecord = false): void {
+  showMain()
+  send('meeting:open', id, { autoRecord })
+}
+
+function iconPath(name: string): string {
+  return app.isPackaged ? join(process.resourcesPath, 'icons', name) : join(app.getAppPath(), 'resources', 'icons', name)
+}
+
+// ---------- menu bar / tray ----------
+
+function createTray(): void {
+  tray = new Tray(nativeImage.createFromPath(iconPath(isMac ? 'trayTemplate.png' : 'tray.png')))
+  tray.setToolTip('Mentat')
+  if (!isMac) tray.on('click', showMain)
+  updateTray()
+}
+
+function updateTray(): void {
+  if (!tray) return
+  const items: MenuItemConstructorOptions[] = recording
+    ? [
+        { label: 'Recording… show notes', click: () => recording && openMeeting(recording.meetingId) },
+        { label: 'Stop recording', click: () => recording && send('recording:autoStop', recording.meetingId) }
+      ]
+    : [{ label: 'Start notes now', click: () => openMeeting(store.createMeeting({ title: 'Quick notes' }).id, true) }]
+  items.push(
+    { type: 'separator' },
+    { label: 'Open Mentat', click: showMain },
+    {
+      label: 'Detect calls automatically',
+      type: 'checkbox',
+      checked: settings.autoDetectCalls,
+      click: (i) => applySettings({ ...settings, autoDetectCalls: i.checked })
+    },
+    {
+      label: 'Open at login',
+      type: 'checkbox',
+      checked: settings.openAtLogin,
+      enabled: app.isPackaged,
+      click: (i) => applySettings({ ...settings, openAtLogin: i.checked })
+    },
+    { type: 'separator' },
+    { label: 'Quit Mentat', click: () => app.quit() }
+  )
+  tray.setContextMenu(Menu.buildFromTemplate(items))
+  if (isMac) tray.setImage(nativeImage.createFromPath(iconPath(recording ? 'trayRecTemplate.png' : 'trayTemplate.png')))
+  tray.setToolTip(recording ? 'Mentat: recording' : 'Mentat')
+}
+
+function applySettings(s: Settings): Settings {
+  settings = saveSettings(s)
+  applyLoginItem()
+  updateTray()
+  return settings
+}
+
+function applyLoginItem(): void {
+  if (!app.isPackaged || process.env.MENTAT_SMOKE_TEST) return
+  app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, args: isMac ? undefined : ['--hidden'] })
+}
+
+// ---------- call detection ----------
+// Watches which apps hold the microphone. When a call app (Zoom, Teams, Meet in a browser…) keeps it for a
+// few seconds, a small prompt offers to take notes; when that app lets go, the recording stops.
+
+const calls = new CallTracker()
+let micIds: string[] = []
+let prompt: BrowserWindow | null = null
+let pendingCall: { app: CallApp; event?: CalendarEvent } | null = null
+let callAppsAtRecordStart: string[] = []
+
+function startCallDetection(): void {
+  if (process.env.MENTAT_SMOKE_TEST) return
+  // To try the prompt without a real call: MENTAT_FAKE_MIC=us.zoom.xos npm run dev
+  const fake = process.env.MENTAT_FAKE_MIC?.split(',').filter(Boolean)
+  if (fake) micIds = fake
+  const stop = fake
+    ? () => undefined
+    : watchMic((ids) => {
+        micIds = ids
+        tickCalls()
+      })
+  if (!stop) return
+  setInterval(tickCalls, 1000)
+  app.on('will-quit', stop)
+}
+
+function tickCalls(): void {
+  for (const ev of calls.update(micIds)) {
+    if (ev.type === 'started') onCallStarted(ev.app)
+    else onCallEnded(ev.app)
+  }
+}
+
+function eventNow(): CalendarEvent | undefined {
+  const now = Date.now()
+  return cachedEvents.find((e) => new Date(e.start).getTime() - 10 * 60_000 <= now && now <= new Date(e.end).getTime())
+}
+
+function onCallStarted(callApp: CallApp): void {
+  if (!settings.autoDetectCalls || recording) return
+  pendingCall = { app: callApp, event: eventNow() }
+  showCallPrompt()
+}
+
+function onCallEnded(callApp: CallApp): void {
+  if (pendingCall?.app.name === callApp.name) closeCallPrompt()
+  if (!recording || !settings.autoStopRecording || !callAppsAtRecordStart.includes(callApp.name)) return
+  if (calls.active().some((a) => callAppsAtRecordStart.includes(a.name))) return
+  send('recording:autoStop', recording.meetingId)
+  new Notification({ title: 'Call ended', body: 'Mentat stopped recording. Your transcript is saved.' }).show()
+}
+
+function showCallPrompt(): void {
+  closeCallPrompt(false)
+  const { workArea } = screen.getPrimaryDisplay()
+  const width = 400
+  const height = 92
+  prompt = new BrowserWindow({
+    width,
+    height,
+    x: workArea.x + workArea.width - width - 16,
+    y: workArea.y + 16,
+    frame: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    backgroundColor: '#ffffff',
+    webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false, contextIsolation: true }
+  })
+  prompt.setAlwaysOnTop(true, 'floating')
+  prompt.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  void prompt.loadURL(rendererUrl('#call-prompt'))
+  prompt.once('ready-to-show', () => prompt?.showInactive())
+  const p = prompt
+  setTimeout(() => p === prompt && closeCallPrompt(), 60_000)
+}
+
+function closeCallPrompt(clearPending = true): void {
+  if (prompt && !prompt.isDestroyed()) prompt.destroy()
+  prompt = null
+  if (clearPending) pendingCall = null
+}
+
+function acceptCall(): void {
+  const call = pendingCall
+  closeCallPrompt()
+  if (!call || recording) return
+  const m = call.event ? meetingForEvent(call.event) : store.createMeeting({ title: call.app.browser ? 'Call' : `${call.app.name} call` })
+  openMeeting(m.id, true)
+}
+
 // ---------- recording ----------
 // Audio capture and transcription both run on-device in the renderer (see renderer/src/stt.worker.ts);
 // the main process only persists finished transcript segments.
@@ -98,6 +285,9 @@ function startRecording(meetingId: string): { offset: number } {
   const m = store.getMeeting(meetingId)
   if (!m) throw new Error('Meeting not found')
   recording = { meetingId }
+  callAppsAtRecordStart = calls.active().map((a) => a.name)
+  closeCallPrompt()
+  updateTray()
   if (!m.startedAt) store.updateMeeting(meetingId, { startedAt: new Date().toISOString() })
   return { offset: m.transcript.reduce((max, s) => Math.max(max, s.end), 0) }
 }
@@ -117,6 +307,8 @@ function stopRecording(): void {
   if (!recording) return
   store.updateMeeting(recording.meetingId, { endedAt: new Date().toISOString() })
   recording = null
+  callAppsAtRecordStart = []
+  updateTray()
 }
 
 // ---------- calendar auto-detect ----------
@@ -191,7 +383,10 @@ function registerIpc(): void {
   const h = ipcMain.handle.bind(ipcMain)
 
   h('settings:get', () => settings)
-  h('settings:save', (_e, s: Settings) => (settings = saveSettings(s)))
+  h('settings:save', (_e, s: Settings) => applySettings(s))
+  h('call:info', () => (pendingCall ? { app: pendingCall.app.name, title: pendingCall.event?.title ?? null } : null))
+  h('call:accept', () => acceptCall())
+  h('call:dismiss', () => closeCallPrompt())
   h('app:info', () => ({
     dataDir: store.dataDir,
     platform: process.platform,
@@ -308,10 +503,17 @@ app.whenReady().then(() => {
   )
 
   createWindow()
+  createTray()
+  applyLoginItem()
+  startCallDetection()
   updater = initUpdater((s) => send('app:updateStatus', s))
   void pollCalendar()
   setInterval(() => void pollCalendar(), 60_000)
-  app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow())
+  app.on('activate', () => showMain())
+})
+
+app.on('before-quit', () => {
+  quitting = true
 })
 
 app.on('window-all-closed', () => {
