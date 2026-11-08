@@ -9,7 +9,7 @@ import type { CalendarEvent, ChatMessage, Meeting, Settings, Template, Transcrip
 import { loadSettings, saveSettings } from './settings'
 import { chat, classifyMeeting, enhanceNotes, followUpEmail, preMeetingBrief } from './claude'
 import { removeEcho } from '../shared/echo'
-import { driveFolderTree, googleCancel, googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
+import { createDriveFolder, driveFolderTree, googleCancel, googleConnect, googleDisconnect, googleStatus, listDriveFolders, shareDoc, syncMeetingToDrive, trashDriveFiles, upcomingEvents } from './google'
 import { SyncManager } from './sync/manager'
 import { initUpdater, installUpdate } from './updater'
 import { watchMic } from './micWatch'
@@ -305,7 +305,13 @@ function addSegment(meetingId: string, seg: Omit<TranscriptSegment, 'id'>): void
 
 function stopRecording(): void {
   if (!recording) return
-  if (store.getMeeting(recording.meetingId)) store.updateMeeting(recording.meetingId, { endedAt: new Date().toISOString() })
+  const meetingId = recording.meetingId
+  if (store.getMeeting(meetingId)) {
+    const m = store.updateMeeting(meetingId, { endedAt: new Date().toISOString() })
+    // Upload the transcript (and any notes) to Drive right away; Enhance later updates the same docs.
+    if (settings.driveUploadAfterRecording !== false && m.transcript.length)
+      void maybeSyncDrive(m).then((saved) => saved !== m && send('meeting:changed', meetingId))
+  }
   recording = null
   callAppsAtRecordStart = []
   updateTray()
@@ -349,7 +355,8 @@ function meetingForEvent(ev: CalendarEvent): Meeting {
 /** Classify (once per meeting, unless asked again) and push notes + transcript to Drive. */
 async function pushToDrive(m: Meeting, reclassify = false): Promise<Meeting> {
   let folderPath = m.drive?.folderPath
-  if (settings.driveAutoClassify && (reclassify || !folderPath)) {
+  // Claude reads the folders already under the upload root and picks (or adds) the right one.
+  if (settings.driveAutoClassify && settings.anthropicApiKey && (reclassify || !folderPath)) {
     try {
       folderPath = (await classifyMeeting(settings, m, await driveFolderTree(settings))).folderPath
     } catch (err) {
@@ -409,14 +416,24 @@ function registerIpc(): void {
   h('meetings:get', (_e, id: string) => store.getMeeting(id))
   h('meetings:create', (_e, partial?: Partial<Meeting>) => store.createMeeting(partial))
   h('meetings:update', (_e, id: string, patch: Partial<Meeting>) => store.updateMeeting(id, patch))
-  h('meetings:delete', (_e, id: string) => {
+  h('meetings:delete', async (_e, id: string) => {
     // Deleting the note that is recording ends the recording first, so no late segment writes it back.
     if (recording?.meetingId === id) {
       recording = null
       callAppsAtRecordStart = []
       updateTray()
     }
+    const m = store.getMeeting(id)
     store.deleteMeeting(id)
+    // Its Drive docs go to the Drive trash too (restorable there for 30 days).
+    const docs = [m?.drive?.docId, m?.drive?.transcriptDocId].filter((x): x is string => !!x)
+    if (docs.length && settings.driveDeleteWithNote !== false && googleStatus().connected) {
+      try {
+        await trashDriveFiles(settings, docs)
+      } catch (err) {
+        send('app:error', `The note is deleted, but its Google Drive copy could not be removed: ${(err as Error).message}`)
+      }
+    }
   })
   h('meetings:fromEvent', (_e, ev: CalendarEvent) => meetingForEvent(ev))
 
@@ -468,6 +485,8 @@ function registerIpc(): void {
     cachedEvents = await upcomingEvents(settings)
     return cachedEvents
   })
+  h('drive:folders', (_e, parent?: string) => listDriveFolders(settings, parent))
+  h('drive:createFolder', (_e, name: string, parent?: string) => createDriveFolder(settings, name, parent === 'root' ? undefined : parent))
   h('drive:sync', async (_e, meetingId: string, reclassify?: boolean) => pushToDrive(store.getMeeting(meetingId)!, reclassify))
   h('drive:share', async (_e, meetingId: string, emails: string[]) => {
     let m = store.getMeeting(meetingId)!

@@ -63,7 +63,7 @@ export interface Meeting {
 export type MeetingSummary = Pick<
   Meeting,
   'id' | 'title' | 'createdAt' | 'updatedAt' | 'startedAt' | 'attendees' | 'folderIds' | 'sharedBy' | 'workspaceIds'
-> & { hasTranscript: boolean; hasEnhanced: boolean; preview: string }
+> & { hasTranscript: boolean; hasEnhanced: boolean; preview: string; /** Saved to Google Drive. */ inDrive?: boolean }
 
 export interface Folder {
   id: string
@@ -110,7 +110,16 @@ export interface Settings {
   googleClientId: string
   googleClientSecret: string
   driveAutoSync: boolean
+  /** Name of the "Mentat" folder created at the top of My Drive when no folder has been picked. */
   driveFolderName: string
+  /** A Drive folder picked in Settings to upload into (overrides driveFolderName). */
+  driveFolderId?: string
+  /** Where the picked folder is, for display, e.g. "My Drive / Work / Meeting notes". */
+  driveFolderLabel?: string
+  /** Upload each note to Drive as soon as its recording stops (not only after Enhance). */
+  driveUploadAfterRecording?: boolean
+  /** Deleting a note also moves its Drive docs to the Drive trash. */
+  driveDeleteWithNote?: boolean
   /** Let Claude file each note into a sub-folder of the Drive folder. */
   driveAutoClassify: boolean
   /** Optional filing rules for Claude, e.g. "Customer calls go under Customers/<company>". */
@@ -164,6 +173,8 @@ export const DEFAULT_SETTINGS: Settings = {
   googleClientSecret: '',
   driveAutoSync: true,
   driveFolderName: 'Mentat',
+  driveUploadAfterRecording: true,
+  driveDeleteWithNote: true,
   driveAutoClassify: true,
   driveRules: '',
   defaultTemplateId: 'general',

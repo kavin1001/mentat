@@ -190,6 +190,7 @@ export function summarize(m: Meeting): MeetingSummary {
     workspaceIds: m.workspaceIds,
     hasTranscript: m.transcript.length > 0,
     hasEnhanced: !!m.enhanced,
+    inDrive: !!m.drive?.docId,
     preview
   }
 }

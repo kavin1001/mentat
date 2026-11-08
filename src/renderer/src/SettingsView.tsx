@@ -3,6 +3,7 @@ import type { GoogleStatus, Settings, Template } from '../../shared/types'
 import { api, type UpdateStatus } from './api'
 import { DIARIZATION_MODEL, STT_MODELS } from '../../shared/stt-models'
 import { SyncSettings } from './SyncSettings'
+import { DriveFolderPicker } from './DriveFolderPicker'
 
 const MODELS = [
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (best notes)' },
@@ -31,6 +32,11 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
 
   // Settings save themselves a moment after each change, so nothing is lost by navigating away.
   const dirty = useRef(false)
+  const markDirty = () => {
+    dirty.current = true
+    setSaved(false)
+  }
+  const [picking, setPicking] = useState(false)
   useEffect(() => {
     if (!s || !dirty.current) return
     const t = setTimeout(() => {
@@ -86,15 +92,48 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
       <section className="card">
         <h3>Google Drive and Calendar</h3>
         <GoogleConnect s={s} google={google} setGoogle={setGoogle} set={set} onError={onError} />
+        <label>Save notes to</label>
+        <div className="drive-target">
+          <span className="pill">{s.driveFolderId ? s.driveFolderLabel || 'Chosen Drive folder' : `My Drive / ${s.driveFolderName || 'Mentat'} (created for you)`}</span>
+          <button className="btn" disabled={!google.connected} title={google.connected ? '' : 'Connect Google Drive first'} onClick={() => setPicking(true)}>
+            Choose folder…
+          </button>
+          {s.driveFolderId && (
+            <button className="link small" onClick={() => {
+                markDirty()
+                setS({ ...s, driveFolderId: undefined, driveFolderLabel: undefined })
+              }}>
+              Use the default
+            </button>
+          )}
+        </div>
+        {picking && (
+          <DriveFolderPicker
+            onClose={() => setPicking(false)}
+            onPick={(id, label) => {
+              setPicking(false)
+              markDirty()
+              setS({ ...s, driveFolderId: id, driveFolderLabel: label })
+            }}
+          />
+        )}
         <label className="check">
-          <input type="checkbox" checked={s.driveAutoSync} onChange={(e) => set('driveAutoSync', e.target.checked)} /> Push every enhanced note and its full transcript to Google Drive
-        </label>
-        <label>
-          Drive folder
-          <input value={s.driveFolderName} onChange={(e) => set('driveFolderName', e.target.value)} />
+          <input type="checkbox" checked={s.driveAutoSync} onChange={(e) => set('driveAutoSync', e.target.checked)} /> Save notes and full transcripts to Google Drive automatically
         </label>
         <label className="check">
-          <input type="checkbox" checked={s.driveAutoClassify} onChange={(e) => set('driveAutoClassify', e.target.checked)} /> Let Claude file each note into the right sub-folder (e.g. Customers / Acme Corp)
+          <input
+            type="checkbox"
+            disabled={!s.driveAutoSync}
+            checked={s.driveUploadAfterRecording !== false}
+            onChange={(e) => set('driveUploadAfterRecording', e.target.checked)}
+          />{' '}
+          Upload as soon as a recording stops (Enhance notes later updates the same Doc)
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={s.driveDeleteWithNote !== false} onChange={(e) => set('driveDeleteWithNote', e.target.checked)} /> When I delete a note, move its Drive copy to the Drive trash
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={s.driveAutoClassify} onChange={(e) => set('driveAutoClassify', e.target.checked)} /> Let Claude file each note into the right sub-folder, using the folders already there (e.g. Customers / Acme Corp)
         </label>
         <label>
           Filing rules for Claude (optional)

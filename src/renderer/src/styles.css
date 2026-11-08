@@ -215,3 +215,10 @@ body.call-prompt-body { background: #fff; overflow: hidden; -webkit-app-region: 
 .notice { background: #fbf6e6; border: 1px solid #efe2b5; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
 .home-card { margin-top: 28px; max-width: 460px; }
 .home-card h3 { margin: 0 0 6px; }
+.folder-picker { width: min(520px, 92vw); }
+.folder-picker .crumbs { margin: 4px 0 10px; font-size: 13px; }
+.folder-picker .crumbs .link:disabled { color: inherit; font-weight: 600; cursor: default; }
+.folder-list { border: 1px solid var(--line); border-radius: 8px; height: 280px; overflow-y: auto; padding: 4px; margin-bottom: 10px; }
+.folder-row { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 7px 10px; }
+.folder-row:hover { background: rgba(0, 0, 0, 0.05); }
+.drive-target { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

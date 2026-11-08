@@ -9,7 +9,7 @@ import { ChatPanel } from './ChatPanel'
 import { SettingsView } from './SettingsView'
 import { TemplatesView } from './TemplatesView'
 import { Markdown } from './Markdown'
-import { ContextMenu, DialogHost, confirmDialog, type MenuItem } from './Dialogs'
+import { ContextMenu, DialogHost, confirmDeleteNote, confirmDialog, type MenuItem } from './Dialogs'
 
 type View =
   | { kind: 'meeting'; id: string; autoRecord?: boolean }
@@ -64,6 +64,7 @@ export function App() {
     const offs = [
       api.events.onCalendar(setEvents),
       syncApi.onDataChanged(() => void refresh()),
+      api.events.onMeetingChanged(() => void refresh()),
       wsApi.onStatus(() => void refresh()),
       api.events.onError((m) => setToast(m)),
       api.events.onOpenMeeting((id, opts) => {
@@ -117,12 +118,8 @@ export function App() {
     }
   }
 
-  const deleteMeeting = async (m: { id: string; title: string }) => {
-    const ok = await confirmDialog(`Delete “${m.title}”?`, {
-      detail: 'Its notes and full transcript are removed from this computer (and from your other devices if sync is on). Copies already saved to Google Drive stay in Drive.',
-      confirmLabel: 'Delete',
-      danger: true
-    })
+  const deleteMeeting = async (m: { id: string; title: string; inDrive?: boolean }) => {
+    const ok = await confirmDeleteNote(m.title, !!m.inDrive)
     if (!ok) return
     try {
       await api.meetings.remove(m.id)
