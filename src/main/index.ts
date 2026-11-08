@@ -1,17 +1,39 @@
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Notification, session, shell, systemPreferences } from 'electron'
+import { pathToFileURL } from 'node:url'
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, net, Notification, protocol, session, shell, systemPreferences } from 'electron'
 import { Store } from '../shared/store'
 import { meetingToMarkdown, transcriptToSrt, transcriptToText } from '../shared/format'
 import type { CalendarEvent, ChatMessage, Meeting, Settings, Template, TranscriptSegment } from '../shared/types'
 import { loadSettings, saveSettings } from './settings'
-import { chat, enhanceNotes, followUpEmail, preMeetingBrief } from './claude'
-import { DeepgramTranscriber } from './transcription'
-import { googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
+import { chat, classifyMeeting, enhanceNotes, followUpEmail, preMeetingBrief } from './claude'
+import { removeEcho } from '../shared/echo'
+import { driveFolderTree, googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
 
 // macOS 13+: let getDisplayMedia return system audio through ScreenCaptureKit, with no virtual audio driver.
 if (process.platform === 'darwin') {
   app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride')
+}
+
+// The UI is served from app://mentat/ (not file://) so the on-device speech model can fetch its WASM
+// runtime, and with cross-origin isolation so ONNX Runtime can use multiple threads.
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
+
+function serveRenderer(): void {
+  const root = join(__dirname, '../renderer')
+  protocol.handle('app', async (req) => {
+    const path = decodeURIComponent(new URL(req.url).pathname)
+    const file = join(root, path === '/' ? 'index.html' : path)
+    if (!file.startsWith(root)) return new Response('Not found', { status: 404 })
+    const res = await net.fetch(pathToFileURL(file).toString())
+    const headers = new Headers(res.headers)
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+    headers.set('Cross-Origin-Embedder-Policy', 'credentialless')
+    if (file.endsWith('.mjs') || file.endsWith('.js')) headers.set('Content-Type', 'text/javascript')
+    if (file.endsWith('.wasm')) headers.set('Content-Type', 'application/wasm')
+    return new Response(res.body, { status: res.status, headers })
+  })
 }
 
 const store = new Store()
@@ -29,7 +51,7 @@ function createWindow(): void {
     webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false, contextIsolation: true }
   })
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else void win.loadFile(join(__dirname, '../renderer/index.html'))
+  else void win.loadURL('app://mentat/index.html')
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
@@ -39,52 +61,34 @@ function createWindow(): void {
 const send = (channel: string, ...args: unknown[]) => win?.webContents.send(channel, ...args)
 
 // ---------- recording ----------
+// Audio capture and transcription both run on-device in the renderer (see renderer/src/stt.worker.ts);
+// the main process only persists finished transcript segments.
 
-let recording: { meetingId: string; transcriber: DeepgramTranscriber; pending: TranscriptSegment[]; flush: NodeJS.Timeout } | null = null
+let recording: { meetingId: string } | null = null
 
-function flushSegments(): void {
-  if (!recording || !recording.pending.length) return
-  const m = store.getMeeting(recording.meetingId)
-  if (!m) return
-  m.transcript.push(...recording.pending)
-  recording.pending = []
-  store.saveMeeting(m)
-}
-
-function startRecording(meetingId: string): void {
-  if (recording) stopRecording()
+function startRecording(meetingId: string): { offset: number } {
   const m = store.getMeeting(meetingId)
   if (!m) throw new Error('Meeting not found')
-  const offset = m.transcript.reduce((max, s) => Math.max(max, s.end), 0)
-  const transcriber = new DeepgramTranscriber(
-    settings,
-    {
-      onFinal: (seg) => {
-        recording?.pending.push(seg)
-        send('transcript:final', meetingId, seg)
-      },
-      onPartial: (speaker, text) => send('transcript:partial', meetingId, speaker, text),
-      onError: (msg) => send('app:error', msg),
-      onClose: () => send('recording:closed', meetingId)
-    },
-    offset
-  )
-  transcriber.start()
+  recording = { meetingId }
   if (!m.startedAt) store.updateMeeting(meetingId, { startedAt: new Date().toISOString() })
-  recording = { meetingId, transcriber, pending: [], flush: setInterval(flushSegments, 5000) }
+  return { offset: m.transcript.reduce((max, s) => Math.max(max, s.end), 0) }
+}
+
+function addSegment(meetingId: string, seg: Omit<TranscriptSegment, 'id'>): void {
+  const m = store.getMeeting(meetingId)
+  if (!m) return
+  const full: TranscriptSegment = { ...seg, id: randomUUID() }
+  const before = m.transcript.length + 1
+  m.transcript = removeEcho([...m.transcript, full]).sort((a, b) => a.start - b.start)
+  store.saveMeeting(m)
+  if (m.transcript.length === before && m.transcript.includes(full)) send('transcript:final', meetingId, full)
+  else send('transcript:reset', meetingId, m.transcript)
 }
 
 function stopRecording(): void {
   if (!recording) return
-  const r = recording
-  r.transcriber.stop()
-  clearInterval(r.flush)
-  // Give the STT provider a moment to return its last final results.
-  setTimeout(() => {
-    flushSegments()
-    store.updateMeeting(r.meetingId, { endedAt: new Date().toISOString() })
-    if (recording === r) recording = null
-  }, 3500)
+  store.updateMeeting(recording.meetingId, { endedAt: new Date().toISOString() })
+  recording = null
 }
 
 // ---------- calendar auto-detect ----------
@@ -122,10 +126,31 @@ function meetingForEvent(ev: CalendarEvent): Meeting {
   return existing ?? store.createMeeting({ title: ev.title, calendarEventId: ev.id, attendees: ev.attendees })
 }
 
+/** Classify (once per meeting, unless asked again) and push notes + transcript to Drive. */
+async function pushToDrive(m: Meeting, reclassify = false): Promise<Meeting> {
+  let folderPath = m.drive?.folderPath
+  if (settings.driveAutoClassify && (reclassify || !folderPath)) {
+    try {
+      folderPath = (await classifyMeeting(settings, m, await driveFolderTree(settings))).folderPath
+    } catch (err) {
+      send('app:error', `Could not classify the note, saving it to the top folder: ${(err as Error).message}`)
+    }
+  }
+  const drive = await syncMeetingToDrive(settings, m, folderPath ?? [])
+  // Mirror the Drive category as a local folder so the sidebar matches Drive.
+  let folderIds = m.folderIds
+  if (folderPath?.length) {
+    const name = folderPath.join(' / ')
+    const folder = store.listFolders().find((f) => f.name === name) ?? store.createFolder(name)
+    folderIds = [folder.id]
+  }
+  return store.updateMeeting(m.id, { drive, folderIds })
+}
+
 async function maybeSyncDrive(m: Meeting): Promise<Meeting> {
   if (!settings.driveAutoSync || !googleStatus().connected) return m
   try {
-    return store.updateMeeting(m.id, { drive: await syncMeetingToDrive(settings, m) })
+    return await pushToDrive(m)
   } catch (err) {
     send('app:error', `Drive sync failed: ${(err as Error).message}`)
     return m
@@ -172,10 +197,9 @@ function registerIpc(): void {
   h('recording:start', (_e, meetingId: string) => startRecording(meetingId))
   h('recording:stop', () => stopRecording())
   h('recording:status', () => (recording ? { meetingId: recording.meetingId } : null))
-  ipcMain.on('audio:chunk', (_e, chunk: ArrayBuffer) => recording?.transcriber.send(Buffer.from(chunk)))
+  h('recording:segment', (_e, meetingId: string, seg: Omit<TranscriptSegment, 'id'>) => addSegment(meetingId, seg))
 
   h('ai:enhance', async (_e, meetingId: string, templateId?: string) => {
-    flushSegments()
     const m = store.getMeeting(meetingId)
     if (!m) throw new Error('Meeting not found')
     const tpl = store.listTemplates().find((t) => t.id === (templateId ?? settings.defaultTemplateId)) ?? store.listTemplates()[0]
@@ -185,7 +209,6 @@ function registerIpc(): void {
     return maybeSyncDrive(saved)
   })
   h('ai:chat', async (e, reqId: string, history: ChatMessage[], scope: { meetingId?: string }) => {
-    flushSegments()
     return chat(settings, store, history, scope, (delta) => e.sender.send('ai:chat:delta', reqId, delta))
   })
   h('ai:followUp', async (_e, meetingId: string) => followUpEmail(settings, store.getMeeting(meetingId)!))
@@ -203,13 +226,10 @@ function registerIpc(): void {
     cachedEvents = await upcomingEvents(settings)
     return cachedEvents
   })
-  h('drive:sync', async (_e, meetingId: string) => {
-    const m = store.getMeeting(meetingId)!
-    return store.updateMeeting(meetingId, { drive: await syncMeetingToDrive(settings, m) })
-  })
+  h('drive:sync', async (_e, meetingId: string, reclassify?: boolean) => pushToDrive(store.getMeeting(meetingId)!, reclassify))
   h('drive:share', async (_e, meetingId: string, emails: string[]) => {
     let m = store.getMeeting(meetingId)!
-    if (!m.drive) m = store.updateMeeting(meetingId, { drive: await syncMeetingToDrive(settings, m) })
+    if (!m.drive) m = await pushToDrive(m)
     await shareDoc(settings, m.drive!.docId, emails)
     return store.updateMeeting(meetingId, { drive: { ...m.drive!, shared: true } })
   })
@@ -234,6 +254,7 @@ function registerIpc(): void {
 
 app.whenReady().then(() => {
   settings = loadSettings()
+  serveRenderer()
   registerIpc()
 
   // System audio capture: answer getDisplayMedia with the primary screen plus loopback audio.

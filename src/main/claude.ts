@@ -272,3 +272,54 @@ export async function preMeetingBrief(settings: Settings, store: Store, event: C
   })
   return textOf(msg)
 }
+
+// ---------- Drive auto-classification ----------
+
+const CLASSIFY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['folderPath', 'reason'],
+  properties: {
+    folderPath: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Folder path under the root, top level first, 1 to 3 levels, e.g. ["Customers", "Acme Corp"].'
+    },
+    reason: { type: 'string', description: 'One short sentence.' }
+  }
+} as const
+
+/** Pick the Drive folder a meeting belongs in, reusing existing folders where they fit. */
+export async function classifyMeeting(settings: Settings, meeting: Meeting, existing: string[][]): Promise<{ folderPath: string[]; reason: string }> {
+  const msg = await client(settings).beta.messages.create({
+    model: settings.model,
+    max_tokens: 2000,
+    betas: [FALLBACK_BETA],
+    fallbacks: 'default',
+    output_config: { effort: 'low', format: { type: 'json_schema', schema: CLASSIFY_SCHEMA } },
+    system: [
+      'You file meeting notes into a folder hierarchy in Google Drive.',
+      'Prefer an existing folder when it fits; create a new one only when nothing fits. Keep names short, in Title Case, and stable',
+      '(e.g. "Customers/Acme Corp", "Hiring/Backend Engineer", "1:1s/Priya Shah", "Internal/Product", "Investors/Sequoia").',
+      'Use at most 3 levels. Never put dates in folder names.',
+      settings.driveRules ? `The user's filing rules, which take priority:\n${settings.driveRules}` : ''
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    messages: [
+      {
+        role: 'user',
+        content: [
+          `Existing folders:\n${existing.length ? existing.map((p) => p.join(' / ')).join('\n') : '(none yet)'}`,
+          '',
+          `Meeting title: ${meeting.title}`,
+          `Attendees: ${meeting.attendees.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ') || 'unknown'}`,
+          `Notes:\n${meeting.enhanced ? enhancedToMarkdown(meeting) : meeting.notes || '(none)'}`,
+          meeting.enhanced ? '' : `Transcript excerpt:\n${transcriptToText(meeting.transcript).slice(0, 6000)}`
+        ].join('\n')
+      }
+    ]
+  })
+  const parsed = JSON.parse(textOf(msg)) as { folderPath: string[]; reason: string }
+  return { folderPath: parsed.folderPath.map((s) => s.replace(/[/\\]/g, '-').trim()).filter(Boolean).slice(0, 3), reason: parsed.reason }
+}

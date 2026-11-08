@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { GoogleStatus, Settings, Template } from '../../shared/types'
 import { api } from './api'
+import { STT_MODELS } from '../../shared/stt-models'
 
 const MODELS = [
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (best notes)' },
@@ -69,16 +70,25 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
       </section>
 
       <section className="card">
-        <h3>Transcription</h3>
-        <p className="muted small">Audio is captured on this computer (your mic plus system audio) and streamed to Deepgram for live speech-to-text. Audio is not stored.</p>
+        <h3>Transcription (on this computer)</h3>
+        <p className="muted small">
+          Speech is transcribed locally with an open-source model, using your GPU when available. Audio never leaves this computer and is not stored.
+          The model is downloaded once the first time you record, then works offline.
+        </p>
         <label>
-          Deepgram API key
-          <input type="password" value={s.deepgramApiKey} onChange={(e) => set('deepgramApiKey', e.target.value)} />
+          Speech model
+          <select value={s.sttModel} onChange={(e) => set('sttModel', e.target.value)}>
+            {STT_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} · {m.sizeMb} MB
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           Language
           <select value={s.language} onChange={(e) => set('language', e.target.value)}>
-            {[['en', 'English'], ['multi', 'Auto-detect (multilingual)'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['nl', 'Dutch'], ['it', 'Italian']].map(([v, l]) => (
+            {[['en', 'English'], ['multi', 'Auto-detect'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['zh', 'Chinese'], ['nl', 'Dutch'], ['it', 'Italian']].map(([v, l]) => (
               <option key={v} value={v}>
                 {l}
               </option>
@@ -86,13 +96,13 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
           </select>
         </label>
         <label>
-          Dictionary (names, products, jargon; one per line)
+          Dictionary for Claude (names, products, jargon; one per line)
           <textarea rows={4} value={s.dictionary.join('\n')} onChange={(e) => set('dictionary', e.target.value.split('\n').map((x) => x.trim()).filter(Boolean))} />
         </label>
       </section>
 
       <section className="card">
-        <h3>Google Calendar and Drive</h3>
+        <h3>Google Drive and Calendar</h3>
         <p className="muted small">
           Create an OAuth client of type “Desktop app” in Google Cloud Console, enable the Calendar and Drive APIs, and paste its ID and secret here. Mentat asks only for read access to your calendar and access to files it creates in Drive.
         </p>
@@ -129,11 +139,23 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
           )}
         </div>
         <label className="check">
-          <input type="checkbox" checked={s.driveAutoSync} onChange={(e) => set('driveAutoSync', e.target.checked)} /> Save every enhanced note and its transcript to Google Drive
+          <input type="checkbox" checked={s.driveAutoSync} onChange={(e) => set('driveAutoSync', e.target.checked)} /> Push every enhanced note and its full transcript to Google Drive
         </label>
         <label>
           Drive folder
           <input value={s.driveFolderName} onChange={(e) => set('driveFolderName', e.target.value)} />
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={s.driveAutoClassify} onChange={(e) => set('driveAutoClassify', e.target.checked)} /> Let Claude file each note into the right sub-folder (e.g. Customers / Acme Corp)
+        </label>
+        <label>
+          Filing rules for Claude (optional)
+          <textarea
+            rows={3}
+            placeholder={'Customer calls go under Customers/<company>\nInterviews go under Hiring/<role>\nAnything with @mycompany.com only goes under Internal/<team>'}
+            value={s.driveRules}
+            onChange={(e) => set('driveRules', e.target.value)}
+          />
         </label>
         <label className="check">
           <input type="checkbox" checked={s.autoDetectMeetings} onChange={(e) => set('autoDetectMeetings', e.target.checked)} /> Notify me when a calendar meeting starts

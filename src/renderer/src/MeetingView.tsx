@@ -4,6 +4,7 @@ import { fmtTime, transcriptTurns } from '../../shared/format'
 import { api } from './api'
 import { startCapture, type CaptureHandle } from './audio'
 import { ChatPanel } from './ChatPanel'
+import { beginTranscription, endTranscription, ensureModel, onTranscriber } from './transcriber'
 
 interface Props {
   id: string
@@ -23,7 +24,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
   const [recording, setRecording] = useState(false)
   const [systemAudio, setSystemAudio] = useState(true)
   const [levels, setLevels] = useState<[number, number]>([0, 0])
-  const [partial, setPartial] = useState<Record<Speaker, string>>({ me: '', them: '' })
+  const [speaking, setSpeaking] = useState<Record<Speaker, boolean>>({ me: false, them: false })
+  const [modelStatus, setModelStatus] = useState<string | null>(null)
   const [enhancing, setEnhancing] = useState(false)
   const [menu, setMenu] = useState(false)
   const [email, setEmail] = useState<string | null>(null)
@@ -46,10 +48,14 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
     const offs = [
       api.events.onFinal((mid, seg) => {
         if (mid !== id) return
-        setM((prev) => (prev ? { ...prev, transcript: [...prev.transcript, seg] } : prev))
-        setPartial((p) => ({ ...p, [seg.speaker]: '' }))
+        setM((prev) => (prev ? { ...prev, transcript: [...prev.transcript, seg].sort((a, b) => a.start - b.start) } : prev))
       }),
-      api.events.onPartial((mid, speaker, text) => mid === id && setPartial((p) => ({ ...p, [speaker]: text })))
+      api.events.onReset((mid, transcript) => mid === id && setM((prev) => (prev ? { ...prev, transcript } : prev))),
+      onTranscriber((msg) => {
+        if (msg.type === 'speaking') setSpeaking((p) => ({ ...p, [msg.speaker]: msg.active }))
+        else if (msg.type === 'progress' && msg.total) setModelStatus(`Downloading speech model ${Math.round((msg.loaded / msg.total) * 100)}%`)
+        else if (msg.type === 'error') onError(msg.message)
+      })
     ]
     return () => {
       offs.forEach((o) => o())
@@ -72,12 +78,20 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
   const start = async () => {
     try {
       await api.app.permissions()
-      await api.recording.start(id)
+      const s = await api.settings.get()
+      setModelStatus('Loading speech model…')
+      await ensureModel(s.sttModel, s.language)
+      setModelStatus(null)
+      const { offset } = await api.recording.start(id)
+      beginTranscription(id, offset)
       capture.current = await startCapture((a, b) => setLevels([a, b]))
       setSystemAudio(capture.current.hasSystemAudio)
       setRecording(true)
     } catch (e) {
+      setModelStatus(null)
       onError((e as Error).message)
+      capture.current?.stop()
+      capture.current = null
       await api.recording.stop()
     }
   }
@@ -85,18 +99,19 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
   const stop = async () => {
     capture.current?.stop()
     capture.current = null
-    await api.recording.stop()
     setRecording(false)
     setLevels([0, 0])
-    setPartial({ me: '', them: '' })
+    setModelStatus('Finishing transcript…')
+    await endTranscription()
+    setModelStatus(null)
+    setSpeaking({ me: false, them: false })
+    await api.recording.stop()
   }
 
   const enhance = async () => {
     if (recording) await stop()
     setEnhancing(true)
     try {
-      // Give the transcriber a moment to deliver its last segments.
-      await new Promise((r) => setTimeout(r, recording ? 4000 : 0))
       const updated = await api.ai.enhance(id, templateId)
       setM(updated)
       setTab('enhanced')
@@ -148,8 +163,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
               ))}
             </select>
             {m.drive && (
-              <a className="pill link" href={m.drive.webViewLink} target="_blank" rel="noreferrer">
-                Google Doc ↗
+              <a className="pill link" href={m.drive.webViewLink} target="_blank" rel="noreferrer" title="Open in Google Drive">
+                Drive{m.drive.folderPath?.length ? `: ${m.drive.folderPath.join(' / ')}` : ''} ↗
               </a>
             )}
             <div className="spacer" />
@@ -159,7 +174,8 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
               </button>
               {menu && (
                 <div className="menu">
-                  <button onClick={() => act(async () => setM(await api.drive.sync(id)))}>Sync to Google Drive</button>
+                  <button onClick={() => act(async () => setM(await api.drive.sync(id)))}>Save to Google Drive</button>
+                  <button onClick={() => act(async () => setM(await api.drive.sync(id, true)))}>Re-file in Drive (let Claude pick again)</button>
                   <button
                     onClick={() =>
                       act(async () => {
@@ -254,7 +270,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
         )}
 
         <div className="dock">
-          <button className={`rec ${recording ? 'on' : ''}`} onClick={recording ? stop : start} title={recording ? 'Stop recording' : 'Start recording'}>
+          <button className={`rec ${recording ? 'on' : ''}`} disabled={!!modelStatus} onClick={recording ? stop : start} title={recording ? 'Stop recording' : 'Start recording'}>
             <span className="rec-dot" />
             {recording ? 'Stop' : m.transcript.length ? 'Resume' : 'Record'}
           </button>
@@ -265,6 +281,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
             </div>
           )}
           {recording && !systemAudio && <span className="small warn">Mic only: allow Screen Recording for system audio</span>}
+          {modelStatus && <span className="small muted">{modelStatus}</span>}
           <button className={`btn ghost ${panel === 'transcript' ? 'active' : ''}`} onClick={() => setPanel(panel === 'transcript' ? null : 'transcript')}>
             Transcript {m.transcript.length ? `(${turns.length})` : ''}
           </button>
@@ -295,7 +312,7 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
           </div>
           {panel === 'transcript' ? (
             <div className="transcript">
-              {!turns.length && !partial.me && !partial.them && <p className="muted small">The full transcript appears here as people talk. It is saved locally and never needs a bot in the call.</p>}
+              {!turns.length && <p className="muted small">The full transcript appears here as people talk. Speech is transcribed on this computer and saved locally; no bot joins the call.</p>}
               {turns.map((t, i) => (
                 <div key={i} className={`turn ${t.label === 'Me' ? 'me' : 'them'}`}>
                   <div className="turn-meta">
@@ -306,10 +323,10 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
               ))}
               {(['me', 'them'] as Speaker[]).map(
                 (s) =>
-                  partial[s] && (
+                  speaking[s] && (
                     <div key={s} className={`turn ${s} partial`}>
-                      <div className="turn-meta">{s === 'me' ? 'Me' : 'Them'} · live</div>
-                      <div>{partial[s]}</div>
+                      <div className="turn-meta">{s === 'me' ? 'Me' : 'Them'} · speaking</div>
+                      <div>…</div>
                     </div>
                   )
               )}

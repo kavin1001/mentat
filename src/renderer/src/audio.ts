@@ -1,5 +1,6 @@
 // Botless capture: microphone + system audio, mixed into a stereo stream
-// (left = me, right = them), resampled to 16 kHz PCM16 and streamed to the main process.
+// (left = me, right = them), resampled to 16 kHz PCM16 and handed to the on-device transcriber.
+import { pushAudio } from './transcriber'
 
 const WORKLET = `
 class PcmWriter extends AudioWorkletProcessor {
@@ -72,7 +73,7 @@ export async function startCapture(onLevel: (me: number, them: number) => void):
 
   const writer = new AudioWorkletNode(ctx, 'pcm-writer', { numberOfInputs: 1, channelCount: 2, channelCountMode: 'explicit' })
   writer.port.onmessage = (e: MessageEvent<{ pcm: ArrayBuffer; peakL: number; peakR: number }>) => {
-    window.mentat.sendAudio(e.data.pcm)
+    pushAudio(e.data.pcm)
     onLevel(e.data.peakL, e.data.peakR)
   }
   merger.connect(writer)

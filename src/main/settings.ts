@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import { DEFAULT_SETTINGS, type Settings } from '../shared/types'
 
-const SECRET_KEYS = ['anthropicApiKey', 'deepgramApiKey', 'googleClientSecret'] as const
+const SECRET_KEYS = ['anthropicApiKey', 'googleClientSecret'] as const
 const path = () => join(app.getPath('userData'), 'settings.json')
 
 export function loadSettings(): Settings {

@@ -10,8 +10,7 @@ function on(channel: string, cb: (...args: any[]) => void): () => void {
 
 const api = {
   invoke,
-  on,
-  sendAudio: (chunk: ArrayBuffer) => ipcRenderer.send('audio:chunk', chunk)
+  on
 }
 
 contextBridge.exposeInMainWorld('mentat', api)

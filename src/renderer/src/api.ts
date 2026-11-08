@@ -1,5 +1,5 @@
 import type {
-  CalendarEvent, ChatMessage, Folder, GoogleStatus, Meeting, MeetingSummary, Settings, Speaker, Template, TranscriptSegment
+  CalendarEvent, ChatMessage, Folder, GoogleStatus, Meeting, MeetingSummary, Settings, Template, TranscriptSegment
 } from '../../shared/types'
 
 const inv = <T,>(ch: string, ...args: unknown[]) => window.mentat.invoke(ch, ...args) as Promise<T>
@@ -31,7 +31,8 @@ export const api = {
     remove: (id: string) => inv<void>('templates:delete', id)
   },
   recording: {
-    start: (meetingId: string) => inv<void>('recording:start', meetingId),
+    start: (meetingId: string) => inv<{ offset: number }>('recording:start', meetingId),
+    segment: (meetingId: string, seg: Omit<TranscriptSegment, 'id'>) => inv<void>('recording:segment', meetingId, seg),
     stop: () => inv<void>('recording:stop'),
     status: () => inv<{ meetingId: string } | null>('recording:status')
   },
@@ -56,13 +57,13 @@ export const api = {
     events: () => inv<CalendarEvent[]>('calendar:events')
   },
   drive: {
-    sync: (meetingId: string) => inv<Meeting>('drive:sync', meetingId),
+    sync: (meetingId: string, reclassify = false) => inv<Meeting>('drive:sync', meetingId, reclassify),
     share: (meetingId: string, emails: string[]) => inv<Meeting>('drive:share', meetingId, emails)
   },
   exportMeeting: (meetingId: string, format: 'md' | 'txt' | 'srt' | 'json') => inv<string | null>('export:meeting', meetingId, format),
   events: {
     onFinal: (cb: (meetingId: string, seg: TranscriptSegment) => void) => window.mentat.on('transcript:final', cb),
-    onPartial: (cb: (meetingId: string, speaker: Speaker, text: string) => void) => window.mentat.on('transcript:partial', cb),
+    onReset: (cb: (meetingId: string, transcript: TranscriptSegment[]) => void) => window.mentat.on('transcript:reset', cb),
     onError: (cb: (msg: string) => void) => window.mentat.on('app:error', cb),
     onOpenMeeting: (cb: (id: string, opts: { autoRecord?: boolean }) => void) => window.mentat.on('meeting:open', cb),
     onCalendar: (cb: (events: CalendarEvent[]) => void) => window.mentat.on('calendar:events', cb)

@@ -51,7 +51,7 @@ export interface Meeting {
   notes: string
   transcript: TranscriptSegment[]
   enhanced?: EnhancedNotes
-  drive?: { docId: string; transcriptDocId?: string; webViewLink: string; syncedAt: string; shared?: boolean }
+  drive?: { docId: string; transcriptDocId?: string; webViewLink: string; syncedAt: string; shared?: boolean; folderPath?: string[] }
 }
 
 export type MeetingSummary = Pick<
@@ -79,14 +79,19 @@ export interface Template {
 export interface Settings {
   anthropicApiKey: string
   model: string
-  deepgramApiKey: string
+  /** On-device speech-to-text model (see shared/stt-models.ts). */
+  sttModel: string
   language: string
-  /** Workspace-wide dictionary: names, jargon and acronyms to bias transcription and spelling. */
+  /** Names, jargon and acronyms Claude should spell exactly. */
   dictionary: string[]
   googleClientId: string
   googleClientSecret: string
   driveAutoSync: boolean
   driveFolderName: string
+  /** Let Claude file each note into a sub-folder of the Drive folder. */
+  driveAutoClassify: boolean
+  /** Optional filing rules for Claude, e.g. "Customer calls go under Customers/<company>". */
+  driveRules: string
   defaultTemplateId: string
   autoDetectMeetings: boolean
 }
@@ -114,13 +119,15 @@ export interface GoogleStatus {
 export const DEFAULT_SETTINGS: Settings = {
   anthropicApiKey: '',
   model: 'claude-opus-5-5',
-  deepgramApiKey: '',
+  sttModel: 'onnx-community/whisper-small',
   language: 'en',
   dictionary: [],
   googleClientId: '',
   googleClientSecret: '',
   driveAutoSync: true,
   driveFolderName: 'Mentat',
+  driveAutoClassify: true,
+  driveRules: '',
   defaultTemplateId: 'general',
   autoDetectMeetings: true
 }

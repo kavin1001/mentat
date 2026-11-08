@@ -184,32 +184,79 @@ export async function upcomingEvents(settings: Settings, days = 7): Promise<Cale
 }
 
 // ---------- Drive ----------
+// Mentat files every note under one root folder ("Mentat" by default) and, when auto-classify is on,
+// into a sub-folder Claude picks, e.g. Mentat/Customers/Acme. With the drive.file scope Mentat only
+// sees folders it created, so the folder tree below is the one Mentat built.
 
-let folderIdCache: { name: string; id: string } | null = null
+const FOLDER_MIME = 'application/vnd.google-apps.folder'
+const folderCache = new Map<string, string>() // "root/a/b" -> folder id
 
-async function ensureFolder(settings: Settings): Promise<string> {
-  const name = settings.driveFolderName || 'Mentat'
-  if (folderIdCache?.name === name) return folderIdCache.id
-  const q = `mimeType='application/vnd.google-apps.folder' and name='${name.replace(/'/g, "\\'")}' and trashed=false`
-  const found = await gfetch<{ files: { id: string }[] }>(settings, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`)
-  let id = found.files[0]?.id
-  if (!id) {
-    const created = await gfetch<{ id: string }>(settings, 'https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder' })
-    })
-    id = created.id
+const q = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+
+async function findOrCreateFolder(settings: Settings, name: string, parent?: string): Promise<string> {
+  const query = `mimeType='${FOLDER_MIME}' and name='${q(name)}' and trashed=false` + (parent ? ` and '${parent}' in parents` : '')
+  const found = await gfetch<{ files: { id: string }[] }>(settings, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id)`)
+  if (found.files[0]) return found.files[0].id
+  const created = await gfetch<{ id: string }>(settings, 'https://www.googleapis.com/drive/v3/files?fields=id', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: FOLDER_MIME, ...(parent ? { parents: [parent] } : {}) })
+  })
+  return created.id
+}
+
+/** Ensure Mentat/<path...> exists and return the id of the deepest folder. */
+async function ensureFolderPath(settings: Settings, path: string[] = []): Promise<string> {
+  const root = settings.driveFolderName || 'Mentat'
+  let key = root
+  let id = folderCache.get(key) ?? (await findOrCreateFolder(settings, root))
+  folderCache.set(key, id)
+  for (const raw of path) {
+    const name = raw.trim().slice(0, 100)
+    if (!name) continue
+    key += '/' + name
+    const cached = folderCache.get(key)
+    id = cached ?? (await findOrCreateFolder(settings, name, id))
+    folderCache.set(key, id)
   }
-  folderIdCache = { name, id }
   return id
 }
 
-/** Create or update a Google Doc from HTML. Returns the file id and link. */
-async function upsertDoc(settings: Settings, name: string, html: string, existingId?: string): Promise<{ id: string; webViewLink: string }> {
+/** Every sub-folder path under the Mentat root, e.g. [["Customers"], ["Customers", "Acme"], ["Hiring"]]. */
+export async function driveFolderTree(settings: Settings): Promise<string[][]> {
+  const rootId = await ensureFolderPath(settings)
+  const all: { id: string; name: string; parents?: string[] }[] = []
+  let pageToken = ''
+  do {
+    const query = `mimeType='${FOLDER_MIME}' and trashed=false`
+    const page = await gfetch<{ files: typeof all; nextPageToken?: string }>(
+      settings,
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,parents)&pageSize=1000${pageToken ? `&pageToken=${pageToken}` : ''}`
+    )
+    all.push(...page.files)
+    pageToken = page.nextPageToken ?? ''
+  } while (pageToken)
+  const children = new Map<string, typeof all>()
+  for (const f of all) for (const p of f.parents ?? []) children.set(p, [...(children.get(p) ?? []), f])
+  const out: string[][] = []
+  const walk = (id: string, path: string[], depth: number) => {
+    if (depth > 4) return
+    for (const c of children.get(id) ?? []) {
+      out.push([...path, c.name])
+      walk(c.id, [...path, c.name], depth + 1)
+    }
+  }
+  walk(rootId, [], 0)
+  return out
+}
+
+/** Create or update a Google Doc from HTML in the given folder, moving it there if it lives elsewhere. */
+async function upsertDoc(settings: Settings, name: string, html: string, parent: string, existingId?: string): Promise<{ id: string; webViewLink: string }> {
   if (existingId) {
     try {
-      return await gfetch(settings, `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=media&fields=id,webViewLink`, {
+      const meta = await gfetch<{ parents?: string[] }>(settings, `https://www.googleapis.com/drive/v3/files/${existingId}?fields=parents`)
+      const move = meta.parents?.includes(parent) ? '' : `&addParents=${parent}&removeParents=${(meta.parents ?? []).join(',')}`
+      return await gfetch(settings, `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=media&fields=id,webViewLink${move}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'text/html' },
         body: html
@@ -218,7 +265,6 @@ async function upsertDoc(settings: Settings, name: string, html: string, existin
       // The doc was deleted in Drive; fall through and create a new one.
     }
   }
-  const parent = await ensureFolder(settings)
   const boundary = `mentat${randomBytes(8).toString('hex')}`
   const body =
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
@@ -231,16 +277,17 @@ async function upsertDoc(settings: Settings, name: string, html: string, existin
   })
 }
 
-/** Sync a meeting's notes (and its full transcript as a second doc) to the Mentat folder in Drive. */
-export async function syncMeetingToDrive(settings: Settings, m: Meeting): Promise<NonNullable<Meeting['drive']>> {
+/** Push a meeting's notes and full transcript to Drive as Google Docs, inside Mentat/<folderPath>. */
+export async function syncMeetingToDrive(settings: Settings, m: Meeting, folderPath = m.drive?.folderPath ?? []): Promise<NonNullable<Meeting['drive']>> {
+  const parent = await ensureFolderPath(settings, folderPath)
   const date = new Date(m.startedAt ?? m.createdAt).toISOString().slice(0, 10)
-  const notes = await upsertDoc(settings, `${date} ${m.title}`, markdownToHtml(meetingToMarkdown(m)), m.drive?.docId)
+  const notes = await upsertDoc(settings, `${date} ${m.title}`, markdownToHtml(meetingToMarkdown(m)), parent, m.drive?.docId)
   let transcriptDocId = m.drive?.transcriptDocId
   if (m.transcript.length) {
     const tHtml = markdownToHtml(`# ${m.title} (transcript)\n\n${transcriptToText(m.transcript).split('\n').join('\n\n')}`)
-    transcriptDocId = (await upsertDoc(settings, `${date} ${m.title} (transcript)`, tHtml, transcriptDocId)).id
+    transcriptDocId = (await upsertDoc(settings, `${date} ${m.title} (transcript)`, tHtml, parent, transcriptDocId)).id
   }
-  return { docId: notes.id, transcriptDocId, webViewLink: notes.webViewLink, syncedAt: new Date().toISOString(), shared: m.drive?.shared }
+  return { docId: notes.id, transcriptDocId, webViewLink: notes.webViewLink, syncedAt: new Date().toISOString(), shared: m.drive?.shared, folderPath }
 }
 
 /** Share the notes doc: anyone with the link can view, and optionally email attendees. */
