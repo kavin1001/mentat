@@ -41,3 +41,6 @@ export const STT_MODELS: SttModel[] = [
 ]
 
 export const DEFAULT_STT_MODEL = 'onnx-community/whisper-small'
+
+/** Speaker-embedding model used to tell apart the people on the "them" channel (runs on CPU, ~100 MB). */
+export const DIARIZATION_MODEL = { id: 'Xenova/wavlm-base-plus-sv', sizeMb: 100 }

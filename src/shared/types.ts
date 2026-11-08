@@ -50,6 +50,8 @@ export interface Meeting {
   /** The user's own notes, as Markdown. */
   notes: string
   transcript: TranscriptSegment[]
+  /** Names for the people on the "them" side, keyed by speaker index (set by the user). */
+  speakerNames?: Record<string, string>
   enhanced?: EnhancedNotes
   drive?: { docId: string; transcriptDocId?: string; webViewLink: string; syncedAt: string; shared?: boolean; folderPath?: string[] }
   /** Shared workspaces this meeting is shared to, on top of any its folder is shared to. */
@@ -100,6 +102,8 @@ export interface Settings {
   model: string
   /** On-device speech-to-text model (see shared/stt-models.ts). */
   sttModel: string
+  /** Tell apart the different people on the "them" side (on-device speaker embeddings). */
+  diarize: boolean
   language: string
   /** Names, jargon and acronyms Claude should spell exactly. */
   dictionary: string[]
@@ -139,6 +143,7 @@ export const DEFAULT_SETTINGS: Settings = {
   anthropicApiKey: '',
   model: 'claude-opus-5-5',
   sttModel: 'onnx-community/whisper-small',
+  diarize: true,
   language: 'en',
   dictionary: [],
   googleClientId: '',

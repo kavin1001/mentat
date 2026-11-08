@@ -28,7 +28,7 @@ function meetingContext(m: Meeting): string {
     `Attendees: ${people}`,
     `<user_notes>\n${m.notes || '(none)'}\n</user_notes>`,
     m.enhanced ? `<enhanced_notes>\n${enhancedToMarkdown(m)}\n</enhanced_notes>` : '',
-    `<transcript>\n${transcriptToText(m.transcript) || '(no transcript)'}\n</transcript>`,
+    `<transcript>\n${transcriptToText(m.transcript, m.speakerNames) || '(no transcript)'}\n</transcript>`,
     `</meeting>`
   ]
     .filter(Boolean)
@@ -83,7 +83,7 @@ export async function enhanceNotes(
     'You turn a person\'s rough meeting notes plus the full meeting transcript into clean, well-organised notes.',
     'The user\'s own notes are the backbone: every point they wrote must appear, rewritten for clarity but keeping their meaning, and marked origin "user".',
     'Fill in important details, numbers, names and decisions from the transcript that the user did not write down, marked origin "ai".',
-    'In the transcript, "Me" is the user (their microphone) and "Them" is everyone else (system audio).',
+    'In the transcript, "Me" is the user (their microphone). Everyone else comes through system audio and is labelled "Them", or "Speaker 1", "Speaker 2"… (or a name) when several people were told apart by voice. Speaker numbering comes from voice matching and can occasionally be wrong; use the attendee list and context to infer who is who.',
     'Do not invent anything that is not supported by the notes or transcript. Leave a section empty rather than padding it.',
     settings.dictionary.length ? `Spell these names and terms exactly: ${settings.dictionary.join(', ')}.` : ''
   ]
@@ -315,7 +315,7 @@ export async function classifyMeeting(settings: Settings, meeting: Meeting, exis
           `Meeting title: ${meeting.title}`,
           `Attendees: ${meeting.attendees.map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(', ') || 'unknown'}`,
           `Notes:\n${meeting.enhanced ? enhancedToMarkdown(meeting) : meeting.notes || '(none)'}`,
-          meeting.enhanced ? '' : `Transcript excerpt:\n${transcriptToText(meeting.transcript).slice(0, 6000)}`
+          meeting.enhanced ? '' : `Transcript excerpt:\n${transcriptToText(meeting.transcript, meeting.speakerNames).slice(0, 6000)}`
         ].join('\n')
       }
     ]

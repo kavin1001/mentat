@@ -63,7 +63,7 @@ export class Store {
     writeAtomic(this.meetingPath(m.id), JSON.stringify(m, null, 2))
     // Human-readable mirrors.
     writeAtomic(join(this.meetingsDir, `${m.id}.md`), meetingToMarkdown(m))
-    if (m.transcript.length) writeAtomic(join(this.transcriptsDir, `${m.id}.txt`), `${m.title}\n\n${transcriptToText(m.transcript)}\n`)
+    if (m.transcript.length) writeAtomic(join(this.transcriptsDir, `${m.id}.txt`), `${m.title}\n\n${transcriptToText(m.transcript, m.speakerNames)}\n`)
     return m
   }
 

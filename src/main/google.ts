@@ -284,7 +284,7 @@ export async function syncMeetingToDrive(settings: Settings, m: Meeting, folderP
   const notes = await upsertDoc(settings, `${date} ${m.title}`, markdownToHtml(meetingToMarkdown(m)), parent, m.drive?.docId)
   let transcriptDocId = m.drive?.transcriptDocId
   if (m.transcript.length) {
-    const tHtml = markdownToHtml(`# ${m.title} (transcript)\n\n${transcriptToText(m.transcript).split('\n').join('\n\n')}`)
+    const tHtml = markdownToHtml(`# ${m.title} (transcript)\n\n${transcriptToText(m.transcript, m.speakerNames).split('\n').join('\n\n')}`)
     transcriptDocId = (await upsertDoc(settings, `${date} ${m.title} (transcript)`, tHtml, parent, transcriptDocId)).id
   }
   return { docId: notes.id, transcriptDocId, webViewLink: notes.webViewLink, syncedAt: new Date().toISOString(), shared: m.drive?.shared, folderPath }

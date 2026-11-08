@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Smoke test (Linux)
+        run: xvfb-run -a node scripts/smoke.mjs
+
+  package:
+    # Packages the real app on macOS and Windows (unsigned) and launches it to make sure it starts.
+    name: Package and launch (${{ matrix.os }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            exe: dist/mac-arm64/Mentat.app/Contents/MacOS/Mentat
+          - os: windows-latest
+            exe: dist/win-unpacked/Mentat.exe
+    runs-on: ${{ matrix.os }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:dir
+      - name: Launch packaged app
+        run: node scripts/smoke.mjs "${{ matrix.exe }}"
+        shell: bash

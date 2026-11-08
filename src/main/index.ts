@@ -11,6 +11,7 @@ import { chat, classifyMeeting, enhanceNotes, followUpEmail, preMeetingBrief } f
 import { removeEcho } from '../shared/echo'
 import { driveFolderTree, googleConnect, googleDisconnect, googleStatus, shareDoc, syncMeetingToDrive, upcomingEvents } from './google'
 import { SyncManager } from './sync/manager'
+import { initUpdater, installUpdate } from './updater'
 
 // macOS 13+: let getDisplayMedia return system audio through ScreenCaptureKit, with no virtual audio driver.
 if (process.platform === 'darwin') {
@@ -41,6 +42,7 @@ const store = new Store()
 let settings: Settings
 let sync: SyncManager | null = null
 let win: BrowserWindow | null = null
+let updater: ReturnType<typeof initUpdater> | null = null
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -54,10 +56,34 @@ function createWindow(): void {
   })
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else void win.loadURL('app://mentat/index.html')
+  if (process.env.MENTAT_SMOKE_TEST) smokeTest(win)
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
   })
+}
+
+// CI launches the packaged app with MENTAT_SMOKE_TEST=1: it must load the UI without renderer errors, then quit.
+function smokeTest(w: BrowserWindow): void {
+  const errors: string[] = []
+  w.webContents.on('console-message', (e) => {
+    if (e.level === 'error') errors.push(e.message)
+  })
+  w.webContents.on('render-process-gone', (_e, d) => errors.push(`renderer gone: ${d.reason}`))
+  w.webContents.on('did-fail-load', (_e, code, desc) => errors.push(`load failed: ${code} ${desc}`))
+  const finish = async () => {
+    const mounted = await w.webContents.executeJavaScript("!!document.querySelector('#root')?.children.length").catch(() => false)
+    if (!mounted) errors.push('UI did not mount')
+    const result = errors.length ? `SMOKE FAIL\n${errors.join('\n')}` : 'SMOKE OK'
+    console.log(result)
+    if (process.env.MENTAT_SMOKE_RESULT) writeFileSync(process.env.MENTAT_SMOKE_RESULT, result)
+    app.exit(errors.length ? 1 : 0)
+  }
+  w.webContents.once('did-finish-load', () => setTimeout(() => void finish(), 5000))
+  setTimeout(() => {
+    errors.push('timed out')
+    void finish()
+  }, 60_000)
 }
 
 const send = (channel: string, ...args: unknown[]) => win?.webContents.send(channel, ...args)
@@ -172,6 +198,10 @@ function registerIpc(): void {
     mcpServerPath: join(__dirname, 'mcp-server.js'),
     nodePath: process.execPath
   }))
+  h('app:version', () => app.getVersion())
+  h('app:updateStatus', () => updater?.status() ?? { state: 'disabled' })
+  h('app:checkForUpdates', () => updater?.check() ?? { state: 'disabled' })
+  h('app:installUpdate', () => installUpdate())
   h('app:openDataDir', () => shell.openPath(store.dataDir))
   h('app:permissions', async () => {
     if (process.platform !== 'darwin') return { microphone: 'granted', screen: 'granted' }
@@ -245,9 +275,9 @@ function registerIpc(): void {
       format === 'md'
         ? meetingToMarkdown(m, { includeTranscript: true })
         : format === 'txt'
-          ? transcriptToText(m.transcript)
+          ? transcriptToText(m.transcript, m.speakerNames)
           : format === 'srt'
-            ? transcriptToSrt(m.transcript)
+            ? transcriptToSrt(m.transcript, m.speakerNames)
             : JSON.stringify(m, null, 2)
     writeFileSync(filePath, content)
     return filePath
@@ -278,6 +308,7 @@ app.whenReady().then(() => {
   )
 
   createWindow()
+  updater = initUpdater((s) => send('app:updateStatus', s))
   void pollCalendar()
   setInterval(() => void pollCalendar(), 60_000)
   app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow())

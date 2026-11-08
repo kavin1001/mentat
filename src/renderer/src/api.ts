@@ -2,6 +2,8 @@ import type {
   CalendarEvent, ChatMessage, Folder, GoogleStatus, Meeting, MeetingSummary, Settings, Template, TranscriptSegment
 } from '../../shared/types'
 
+export type UpdateStatus = { state: string; version?: string; percent?: number; message?: string }
+
 const inv = <T,>(ch: string, ...args: unknown[]) => window.mentat.invoke(ch, ...args) as Promise<T>
 
 export const api = {
@@ -9,7 +11,12 @@ export const api = {
   app: {
     info: () => inv<{ dataDir: string; platform: string; mcpServerPath: string; nodePath: string }>('app:info'),
     openDataDir: () => inv<void>('app:openDataDir'),
-    permissions: () => inv<{ microphone: string; screen: string }>('app:permissions')
+    permissions: () => inv<{ microphone: string; screen: string }>('app:permissions'),
+    version: () => inv<string>('app:version'),
+    updateStatus: () => inv<UpdateStatus>('app:updateStatus'),
+    checkForUpdates: () => inv<UpdateStatus>('app:checkForUpdates'),
+    installUpdate: () => inv<void>('app:installUpdate'),
+    onUpdateStatus: (cb: (s: UpdateStatus) => void) => window.mentat.on('app:updateStatus', cb)
   },
   meetings: {
     list: (opts: { folderId?: string; query?: string } = {}) => inv<MeetingSummary[]>('meetings:list', opts),

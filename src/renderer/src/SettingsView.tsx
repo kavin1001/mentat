@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { GoogleStatus, Settings, Template } from '../../shared/types'
-import { api } from './api'
-import { STT_MODELS } from '../../shared/stt-models'
+import { api, type UpdateStatus } from './api'
+import { DIARIZATION_MODEL, STT_MODELS } from '../../shared/stt-models'
 import { SyncSettings } from './SyncSettings'
 
 const MODELS = [
@@ -16,12 +16,17 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
   const [templates, setTemplates] = useState<Template[]>([])
   const [info, setInfo] = useState<{ dataDir: string; mcpServerPath: string; nodePath: string } | null>(null)
   const [saved, setSaved] = useState(false)
+  const [version, setVersion] = useState('')
+  const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
 
   useEffect(() => {
     void api.settings.get().then(setS)
     void api.google.status().then(setGoogle)
     void api.templates.list().then(setTemplates)
     void api.app.info().then(setInfo)
+    void api.app.version().then(setVersion)
+    void api.app.updateStatus().then(setUpdate)
+    return api.app.onUpdateStatus(setUpdate)
   }, [])
 
   if (!s) return null
@@ -85,6 +90,9 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
               </option>
             ))}
           </select>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={s.diarize ?? true} onChange={(e) => set('diarize', e.target.checked)} /> Tell apart the other people on the call by voice (Speaker 1, Speaker 2…; click a name in the transcript to rename). Adds a {DIARIZATION_MODEL.sizeMb} MB model.
         </label>
         <label>
           Language
@@ -184,6 +192,24 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
         </button>
       </section>
 
+      <section className="card">
+        <h3>Updates</h3>
+        <p className="muted small">
+          Mentat {version}. {updateText(update)}
+        </p>
+        {update.state === 'ready' ? (
+          <button className="btn primary" onClick={() => api.app.installUpdate()}>
+            Restart to update
+          </button>
+        ) : (
+          update.state !== 'disabled' && (
+            <button className="btn" disabled={update.state === 'checking' || update.state === 'downloading'} onClick={() => void api.app.checkForUpdates().then(setUpdate)}>
+              Check for updates
+            </button>
+          )
+        )}
+      </section>
+
       <div className="row end sticky-save">
         {saved && <span className="muted">Saved</span>}
         <button className="btn primary" onClick={save}>
@@ -192,4 +218,24 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
       </div>
     </div>
   )
+}
+
+function updateText(u: UpdateStatus): string {
+  switch (u.state) {
+    case 'disabled':
+      return 'Automatic updates are on in installed builds only.'
+    case 'checking':
+      return 'Checking for updates…'
+    case 'none':
+      return 'You have the latest version.'
+    case 'available':
+    case 'downloading':
+      return `Downloading ${u.version ?? 'an update'}${u.percent != null ? ` (${u.percent}%)` : ''}…`
+    case 'ready':
+      return `Version ${u.version} is ready to install.`
+    case 'error':
+      return `Update check failed: ${u.message}`
+    default:
+      return 'Updates install automatically when you quit.'
+  }
 }
