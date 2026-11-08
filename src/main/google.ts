@@ -276,7 +276,7 @@ const ALL_DRIVES = 'supportsAllDrives=true&includeItemsFromAllDrives=true'
 async function findOrCreateFolder(settings: Settings, name: string, parent?: string): Promise<string> {
   // With full Drive access, look only at the top of My Drive for the root, not every folder with that name.
   const query = `mimeType='${FOLDER_MIME}' and name='${q(name)}' and trashed=false and '${parent ?? 'root'}' in parents`
-  const found = await gfetch<{ files: { id: string }[] }>(settings, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id)&${ALL_DRIVES}`)
+  const found = await gfetch<{ files: { id: string }[] }>(settings, `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id)&corpora=allDrives&${ALL_DRIVES}`)
   if (found.files[0]) return found.files[0].id
   return createDriveFolder(settings, name, parent)
 }
@@ -291,15 +291,34 @@ export async function createDriveFolder(settings: Settings, name: string, parent
   return created.id
 }
 
-/** The folders directly inside a folder ("root" is the top of My Drive), for the folder picker. */
+/**
+ * Folders for the picker. `parent` is a folder id, or one of the starting places: "root" (My Drive),
+ * "shared" (Shared with me) and "drives" (shared drives, listed as if they were folders).
+ */
 export async function listDriveFolders(settings: Settings, parent = 'root'): Promise<{ id: string; name: string }[]> {
-  const query = `mimeType='${FOLDER_MIME}' and trashed=false and '${q(parent)}' in parents`
+  if (parent === 'drives') {
+    const out: { id: string; name: string }[] = []
+    let pageToken = ''
+    do {
+      const page = await gfetch<{ drives?: { id: string; name: string }[]; nextPageToken?: string }>(
+        settings,
+        `https://www.googleapis.com/drive/v3/drives?pageSize=100&fields=nextPageToken,drives(id,name)${pageToken ? `&pageToken=${pageToken}` : ''}`
+      )
+      out.push(...(page.drives ?? []))
+      pageToken = page.nextPageToken ?? ''
+    } while (pageToken && out.length < 500)
+    return out.sort((x, y) => x.name.localeCompare(y.name))
+  }
+  const query =
+    parent === 'shared'
+      ? `mimeType='${FOLDER_MIME}' and trashed=false and sharedWithMe`
+      : `mimeType='${FOLDER_MIME}' and trashed=false and '${q(parent)}' in parents`
   const out: { id: string; name: string }[] = []
   let pageToken = ''
   do {
     const page = await gfetch<{ files: { id: string; name: string }[]; nextPageToken?: string }>(
       settings,
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name)&orderBy=name&pageSize=200&${ALL_DRIVES}${pageToken ? `&pageToken=${pageToken}` : ''}`
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name)&orderBy=name&pageSize=200&corpora=allDrives&${ALL_DRIVES}${pageToken ? `&pageToken=${pageToken}` : ''}`
     )
     out.push(...page.files)
     pageToken = page.nextPageToken ?? ''
@@ -361,7 +380,7 @@ export async function driveFolderTree(settings: Settings): Promise<string[][]> {
       do {
         const page = await gfetch<{ files: { id: string; name: string; parents?: string[] }[]; nextPageToken?: string }>(
           settings,
-          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,parents)&pageSize=1000&${ALL_DRIVES}${pageToken ? `&pageToken=${pageToken}` : ''}`
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,parents)&pageSize=1000&corpora=allDrives&${ALL_DRIVES}${pageToken ? `&pageToken=${pageToken}` : ''}`
         )
         for (const f of page.files) {
           const parent = batch.find((p) => f.parents?.includes(p.id))

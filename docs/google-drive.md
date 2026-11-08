@@ -66,7 +66,7 @@ People who connected before this change gave Mentat only `drive.file` access. Se
 
 ## Where notes go, and when
 
-- **Folder:** Settings → Google Drive and Calendar → **Choose folder…** picks any folder in your Drive (or makes a
+- **Folder:** Settings → Google Drive and Calendar → **Choose folder…** picks any folder in My Drive, Shared with me or a shared drive (or makes a
   new one). Without a choice, Mentat creates `Mentat` at the top of My Drive.
 - **Filing:** with "Let Claude file each note" on, Claude reads the folders already inside that folder and puts
   each note in the best fit, e.g. `Customers / Acme Corp`, creating a sub-folder only when nothing fits.
