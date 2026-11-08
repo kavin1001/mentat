@@ -138,8 +138,11 @@ export function MeetingView({ id, autoRecord, folders, onChanged, onDeleted, onE
     setRecording(false)
     setLevels([0, 0])
     setModelStatus('Finishing transcript…')
-    await endTranscription()
-    setModelStatus(null)
+    try {
+      await endTranscription()
+    } finally {
+      setModelStatus(null)
+    }
     setSpeaking({ me: false, them: false })
     setPartial({ me: '', them: '' })
     await api.recording.stop(end)
