@@ -2,6 +2,7 @@
 // pairs a phone on their network (no password) or turns on cloud features with a password profile.
 import { useEffect, useState } from 'react'
 import { syncApi, type SyncStatus } from './syncApi'
+import { WorkspacesSettings } from './WorkspacesSettings'
 
 const ago = (iso?: string) => {
   if (!iso) return 'never'
@@ -200,6 +201,7 @@ export function SyncSettings({ onError }: { onError: (m: string) => void }) {
           </>
         )}
       </section>
+      <WorkspacesSettings onError={onError} />
     </>
   )
 }

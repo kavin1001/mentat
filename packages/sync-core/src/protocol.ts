@@ -29,6 +29,8 @@ export interface WireChange {
   key: string
   seq: number
   blob: string
+  /** Workspaces only: the member who wrote this record, as the relay saw it. */
+  author?: string
 }
 
 export interface PullResponse {

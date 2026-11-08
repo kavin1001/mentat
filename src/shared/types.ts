@@ -52,17 +52,36 @@ export interface Meeting {
   transcript: TranscriptSegment[]
   enhanced?: EnhancedNotes
   drive?: { docId: string; transcriptDocId?: string; webViewLink: string; syncedAt: string; shared?: boolean; folderPath?: string[] }
+  /** Shared workspaces this meeting is shared to, on top of any its folder is shared to. */
+  workspaceIds?: string[]
+  /** Only on copies received from a shared workspace: the profile that shared it. */
+  sharedBy?: string
 }
 
 export type MeetingSummary = Pick<
   Meeting,
-  'id' | 'title' | 'createdAt' | 'updatedAt' | 'startedAt' | 'attendees' | 'folderIds'
+  'id' | 'title' | 'createdAt' | 'updatedAt' | 'startedAt' | 'attendees' | 'folderIds' | 'sharedBy' | 'workspaceIds'
 > & { hasTranscript: boolean; hasEnhanced: boolean; preview: string }
 
 export interface Folder {
   id: string
   name: string
   createdAt: string
+  /** Every meeting in this folder is shared to these workspaces. */
+  workspaceIds?: string[]
+}
+
+/** A shared workspace as cached on this computer (~/Mentat/workspaces/<id>/workspace.json). */
+export interface LocalWorkspace {
+  id: string
+  name: string
+  role: 'owner' | 'editor' | 'viewer'
+  owner: string
+  serverUrl: string
+  /** The profile on this computer that is the member. */
+  me: string
+  members: { username: string; role: 'owner' | 'editor' | 'viewer' }[]
+  syncedAt?: string
 }
 
 export interface Template {

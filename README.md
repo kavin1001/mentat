@@ -22,7 +22,7 @@ into clean notes, and files every note into the right folder in Google Drive.
 | Sharing | Share a note as a view-only Google Doc link, optionally emailing attendees. |
 | Folders and search | Folders, full-text search over notes and transcripts. |
 | Dictionary | Names and jargon Claude spells exactly in notes. |
-| Claude via MCP | `out/main/mcp-server.js` is a stdio MCP server (list, search, get meeting, get transcript, update notes). Settings shows a ready-to-paste Claude Desktop config. |
+| Claude via MCP | `out/main/mcp-server.js` is a stdio MCP server (list, search, get meeting, get transcript, list workspaces, update notes), covering your own meetings and those shared with you. Settings shows a ready-to-paste Claude Desktop config. |
 | Models | Claude Opus 5.5 by default; Sonnet 5.5 or Haiku 5.5 selectable. Refusal fallback enabled. |
 
 ## Setup
@@ -61,6 +61,27 @@ Mentat works with no account and no server. Two optional ways to use it on your 
 
 Both use the same protocol (`packages/sync-core`). Sync state is kept in `~/Mentat/.sync/`; secrets are stored
 in the OS keychain. See `mobile/README.md` and `sync-server/README.md`.
+
+## Shared workspaces
+
+Optional, and built on cloud features: other people with a profile on the same sync server can join your
+workspace and read the meetings you share to it, including enhanced notes and full transcripts.
+
+- **Create and invite**: Settings → Shared workspaces → Create workspace, open it, then Create invite code.
+  Codes are single use, last 7 days, and carry the workspace key, so send them privately.
+- **Roles**: *viewer* (read), *editor* (read, and share their own meetings), *owner* (manage members and
+  invites, delete the workspace). The server enforces roles, and a member can only change meetings they shared.
+- **What's shared**: tick folders in the workspace settings (every meeting in them is shared), or share a single
+  meeting from its ⋯ menu. Shared copies leave out your folders and Drive links.
+- **Reading**: shared meetings appear under *Workspaces* in the sidebar (read-only), and are cached decrypted in
+  `~/Mentat/workspaces/<id>/`. The MCP server reads them too, so each member's Claude can search, list and read
+  every meeting that member has access to (`list_workspaces`, plus a `workspace` filter on the other tools).
+- **Removing someone** deletes their access, removes the cached copies from their computer on its next sync, and
+  rotates the workspace key so anything shared afterwards is encrypted with a key they never had.
+
+Encryption: each profile has an X25519 key derived from its password; the workspace keyring is sealed to each
+member's key. Invites bind the joiner's key with a MAC only the invite holder can make, and the owner checks it
+before sealing new keys, so a sync server can't slip in its own key. Details in `packages/sync-core/src/workspace.ts`.
 
 ## Layout
 
