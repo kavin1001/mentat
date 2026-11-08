@@ -31,6 +31,8 @@ export function App() {
   const [query, setQuery] = useState('')
   const [toast, setToast] = useState<string | null>(null)
   const [brief, setBrief] = useState<{ ev: CalendarEvent; text: string | null } | null>(null)
+  // Electron does not implement window.prompt(), so new folders are named inline.
+  const [newFolder, setNewFolder] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setMeetings(await api.meetings.list({ folderId, query: query || undefined }))
@@ -83,9 +85,10 @@ export function App() {
   }
 
   const addFolder = async () => {
-    const name = prompt('Folder name')
-    if (name?.trim()) {
-      await api.folders.create(name.trim())
+    const name = newFolder?.trim()
+    setNewFolder(null)
+    if (name) {
+      await api.folders.create(name)
       void refresh()
     }
   }
@@ -129,8 +132,22 @@ export function App() {
 
         <section>
           <h4>
-            Folders <button className="link small" onClick={addFolder}>+ New</button>
+            Folders <button className="link small" onClick={() => setNewFolder('')}>+ New</button>
           </h4>
+          {newFolder !== null && (
+            <input
+              className="search"
+              autoFocus
+              placeholder="Folder name"
+              value={newFolder}
+              onChange={(e) => setNewFolder(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addFolder()
+                if (e.key === 'Escape') setNewFolder(null)
+              }}
+              onBlur={() => setNewFolder(null)}
+            />
+          )}
           <button className={`nav ${!folderId ? 'active' : ''}`} onClick={() => setFolderId(undefined)}>
             All notes
           </button>
@@ -223,7 +240,12 @@ export function App() {
           </div>
         </div>
       )}
-      {toast && <div className="toast" onClick={() => setToast(null)}>{toast}</div>}
+      {toast && (
+        <div className="toast" onClick={() => setToast(null)}>
+          {/* Drop Electron's IPC wrapper so the user sees only the actual message. */}
+          {toast.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}
+        </div>
+      )}
     </div>
   )
 }
