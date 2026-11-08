@@ -50,6 +50,18 @@ Copy the config from Settings → "Use your meetings in Claude (MCP)", or for de
 { "mcpServers": { "mentat": { "command": "node", "args": ["/path/to/mentat/out/main/mcp-server.js"] } } }
 ```
 
+## Phone app and sync
+
+Mentat works with no account and no server. Two optional ways to use it on your phone:
+
+- **Phone on this network** (no password): Settings → Phone on this network → Pair a phone, then scan
+  the code with the Mentat phone app (`mobile/`). The phone syncs directly with this computer over Wi-Fi.
+- **Cloud features** (password-gated): create a profile on a Mentat sync server (`sync-server/`, self-hostable)
+  to sync from anywhere. Notes are end-to-end encrypted with a key derived from your password on your devices.
+
+Both use the same protocol (`packages/sync-core`). Sync state is kept in `~/Mentat/.sync/`; secrets are stored
+in the OS keychain. See `mobile/README.md` and `sync-server/README.md`.
+
 ## Layout
 
 ```
@@ -58,6 +70,10 @@ src/preload/      Context-isolated bridge
 src/renderer/     React UI, audio capture worklet, on-device speech-to-text worker
 src/shared/       Types, file store, templates, formatters (shared with the MCP server)
 src/mcp/          Stdio MCP server
+src/main/sync/    Optional sync: change index, local pairing server, cloud client
+packages/sync-core/  Sync protocol and end-to-end encryption (shared with the phone and server)
+mobile/           Phone companion (Expo / React Native)
+sync-server/      Optional, self-hostable cloud relay
 ```
 
 Data lives in `~/Mentat` (override with `MENTAT_DATA_DIR`): `meetings/<id>.json`, a Markdown mirror

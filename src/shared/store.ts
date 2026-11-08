@@ -57,8 +57,9 @@ export class Store {
     return JSON.parse(readFileSync(p, 'utf8')) as Meeting
   }
 
-  saveMeeting(m: Meeting): Meeting {
-    m.updatedAt = new Date().toISOString()
+  /** `keepUpdatedAt` is for sync, which writes a record exactly as another device last saved it. */
+  saveMeeting(m: Meeting, opts: { keepUpdatedAt?: boolean } = {}): Meeting {
+    if (!opts.keepUpdatedAt || !m.updatedAt) m.updatedAt = new Date().toISOString()
     writeAtomic(this.meetingPath(m.id), JSON.stringify(m, null, 2))
     // Human-readable mirrors.
     writeAtomic(join(this.meetingsDir, `${m.id}.md`), meetingToMarkdown(m))

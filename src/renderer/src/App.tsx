@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CalendarEvent, Folder, MeetingSummary } from '../../shared/types'
 import { api } from './api'
+import { syncApi } from './syncApi'
 import { MeetingView } from './MeetingView'
 import { ChatPanel } from './ChatPanel'
 import { SettingsView } from './SettingsView'
@@ -44,6 +45,7 @@ export function App() {
     api.google.events().then(setEvents).catch(() => setEvents([]))
     const offs = [
       api.events.onCalendar(setEvents),
+      syncApi.onDataChanged(() => void refresh()),
       api.events.onError((m) => setToast(m)),
       api.events.onOpenMeeting((id, opts) => {
         setView({ kind: 'meeting', id, autoRecord: opts.autoRecord })
