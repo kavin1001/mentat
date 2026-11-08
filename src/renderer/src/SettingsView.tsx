@@ -117,17 +117,9 @@ export function SettingsView({ onError }: { onError: (m: string) => void }) {
             }}
           />
         )}
+        <p className="muted small">Each note has a <strong>Save to Drive</strong> button that uploads its notes and full transcript here in one click.</p>
         <label className="check">
-          <input type="checkbox" checked={s.driveAutoSync} onChange={(e) => set('driveAutoSync', e.target.checked)} /> Save notes and full transcripts to Google Drive automatically
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            disabled={!s.driveAutoSync}
-            checked={s.driveUploadAfterRecording !== false}
-            onChange={(e) => set('driveUploadAfterRecording', e.target.checked)}
-          />{' '}
-          Upload as soon as a recording stops (Enhance notes later updates the same Doc)
+          <input type="checkbox" checked={!!s.driveAutoUpload} onChange={(e) => set('driveAutoUpload', e.target.checked)} /> Also upload on its own when I end a meeting (and after Enhance)
         </label>
         <label className="check">
           <input type="checkbox" checked={s.driveDeleteWithNote !== false} onChange={(e) => set('driveDeleteWithNote', e.target.checked)} /> When I delete a note, move its Drive copy to the Drive trash

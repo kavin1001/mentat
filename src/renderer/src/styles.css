@@ -222,3 +222,5 @@ body.call-prompt-body { background: #fff; overflow: hidden; -webkit-app-region: 
 .folder-row { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 7px 10px; }
 .folder-row:hover { background: rgba(0, 0, 0, 0.05); }
 .drive-target { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.btn.attention { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.dock .select { min-width: 90px; }

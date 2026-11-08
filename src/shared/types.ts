@@ -109,6 +109,7 @@ export interface Settings {
   dictionary: string[]
   googleClientId: string
   googleClientSecret: string
+  /** @deprecated replaced by driveAutoUpload; kept so old settings files still load. */
   driveAutoSync: boolean
   /** Name of the "Mentat" folder created at the top of My Drive when no folder has been picked. */
   driveFolderName: string
@@ -116,8 +117,8 @@ export interface Settings {
   driveFolderId?: string
   /** Where the picked folder is, for display, e.g. "My Drive / Work / Meeting notes". */
   driveFolderLabel?: string
-  /** Upload each note to Drive as soon as its recording stops (not only after Enhance). */
-  driveUploadAfterRecording?: boolean
+  /** Upload to Drive on its own when a meeting ends (and after Enhance). Off: only the Save to Drive button uploads. */
+  driveAutoUpload?: boolean
   /** Deleting a note also moves its Drive docs to the Drive trash. */
   driveDeleteWithNote?: boolean
   /** Let Claude file each note into a sub-folder of the Drive folder. */
@@ -173,7 +174,7 @@ export const DEFAULT_SETTINGS: Settings = {
   googleClientSecret: '',
   driveAutoSync: true,
   driveFolderName: 'Mentat',
-  driveUploadAfterRecording: true,
+  driveAutoUpload: false,
   driveDeleteWithNote: true,
   driveAutoClassify: true,
   driveRules: '',
